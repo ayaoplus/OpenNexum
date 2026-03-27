@@ -117,7 +117,7 @@ def bullet_lines(items):
     return "\n".join(f"- {value}" for value in values) if values else "- none"
 
 
-def criteria_lines(criteria):
+def format_criteria_list(criteria):
     rendered = []
     for item in criteria:
         if not isinstance(item, dict):
@@ -136,6 +136,27 @@ def criteria_lines(criteria):
           line = f"{line} ({'; '.join(details)})"
         rendered.append(line)
     return "\n".join(rendered) if rendered else "- none"
+
+
+def criteria_lines(criteria):
+    return format_criteria_list(criteria)
+
+
+def format_sub_strategies(sub_strategies):
+    return "\n".join(f"- type: {strategy.get('type', 'unknown')}" for strategy in sub_strategies)
+
+
+def format_sub_strategies_criteria(sub_strategies):
+    """Group criteria by sub-strategy type."""
+    lines = []
+    for index, strategy in enumerate(sub_strategies, 1):
+        lines.append(f"\n### Sub-strategy {index}: {strategy.get('type', 'unknown')}")
+        strategy_criteria = as_list(strategy.get("criteria"))
+        if strategy_criteria:
+            lines.append(format_criteria_list(strategy_criteria))
+        else:
+            lines.append("- (no criteria defined)")
+    return "\n".join(lines).lstrip() if lines else "- none"
 
 
 try:
@@ -169,6 +190,7 @@ else:
     contract_file = os.path.join(project_dir, "docs", "nexum", "contracts", f"{task_id}.yaml")
 
 contract = load_yaml(contract_file)
+task_name = str(contract.get("name") or task_id)
 eval_strategy = contract.get("eval_strategy") if isinstance(contract.get("eval_strategy"), dict) else {}
 scope = contract.get("scope") if isinstance(contract.get("scope"), dict) else {}
 criteria = as_list(eval_strategy.get("criteria"))
@@ -201,6 +223,7 @@ with open(prompt_template, "r", encoding="utf-8") as handle:
 
 rendered = template
 replacements = {
+    "{{TASK_NAME}}": task_name,
     "{{DELIVERABLES}}": bullet_lines(as_list(contract.get("deliverables"))),
     "{{SCOPE_FILES}}": bullet_lines(as_list(scope.get("files"))),
     "{{CRITERIA_LIST}}": criteria_lines(criteria),
@@ -229,6 +252,28 @@ elif eval_type == "integration":
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
+elif eval_type == "composite":
+    sub_strategies = as_list(eval_strategy.get("sub_strategies"))
+    if not sub_strategies:
+        fail("composite eval requires sub_strategies")
+    for strategy in sub_strategies:
+        if not isinstance(strategy, dict):
+            fail("composite eval sub_strategies must be objects")
+        strategy_type = str(strategy.get("type") or "").strip()
+        if not strategy_type:
+            fail("composite eval sub_strategy missing type")
+        if strategy_type == "composite":
+            fail("composite eval does not allow nested composite sub_strategies")
+    composite_template_path = os.path.join(skill_root, "references", "prompt-evaluator-composite.md")
+    if not os.path.isfile(composite_template_path):
+        fail(f"composite prompt template not found: {composite_template_path}")
+    with open(composite_template_path, "r", encoding="utf-8") as handle:
+        template = handle.read()
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    rendered = rendered.replace("{{SUB_STRATEGIES_LIST}}", format_sub_strategies(sub_strategies))
+    rendered = rendered.replace("{{SUB_STRATEGIES_CRITERIA}}", format_sub_strategies_criteria(sub_strategies))
 else:
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
