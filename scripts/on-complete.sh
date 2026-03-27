@@ -138,6 +138,42 @@ with open(events_file, "a", encoding="utf-8") as handle:
 PY
 }
 
+event_exists() {
+  local event_name="$1"
+  local iteration="${2:-}"
+  EVENT_NAME="$event_name" EVENTS_FILE="$EVENTS_FILE" TASK_ID="$TASK_ID" EVENT_ITERATION="${iteration}" python3 - <<'PY'
+import json
+import os
+import sys
+
+events_file = os.environ["EVENTS_FILE"]
+event_name = os.environ["EVENT_NAME"]
+task_id = os.environ["TASK_ID"]
+iteration = os.environ.get("EVENT_ITERATION", "")
+
+try:
+    with open(events_file, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if item.get("event") != event_name or item.get("task_id") != task_id:
+                continue
+            if iteration:
+                if str(item.get("iteration")) != iteration:
+                    continue
+            raise SystemExit(0)
+except FileNotFoundError:
+    pass
+
+raise SystemExit(1)
+PY
+}
+
 json_value() {
   local json_payload="$1"
   local json_path="$2"
@@ -1012,7 +1048,6 @@ if [ "$ROLE" = "generator" ]; then
     "commit_hash=${head_commit}" \
     "eval_result_path=${EVAL_RESULT_PATH}" \
     "last_error=null"
-  EVENT_ROLE="generator" EVENT_ITERATION="$ITERATION" EVENT_COMMIT_HASH="$head_commit" append_event "eval_started"
 
   if [ ! -x "$DISPATCH_EVALUATOR_SCRIPT" ]; then
     NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
@@ -1035,6 +1070,9 @@ if [ "$ROLE" = "generator" ]; then
     exit 0
   fi
 
+  if ! event_exists "eval_started" "$ITERATION"; then
+    EVENT_ROLE="generator" EVENT_ITERATION="$ITERATION" EVENT_COMMIT_HASH="$head_commit" append_event "eval_started"
+  fi
   send_system_event "eval_started: ${TASK_ID}"
   send_notification "🔍 ${TASK_ID} generator done → eval starting (iter ${ITERATION})"
   exit 0
