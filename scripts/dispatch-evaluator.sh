@@ -26,45 +26,26 @@ fail() {
 
 resolve_config_value() {
   local path="$1"
-  NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SWARM_CONFIG_SCRIPT" resolve "$path" 2>/dev/null || true
+  NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SWARM_CONFIG_SCRIPT" get "$path" 2>/dev/null || true
 }
 
 build_agent_command() {
   local agent="$1"
   local cli
-  local model
-  local reasoning
 
   cli="$(resolve_config_value "agents.${agent}.cli")"
-  model="$(resolve_config_value "agents.${agent}.model")"
-  reasoning="$(resolve_config_value "agents.${agent}.reasoning")"
 
   if [ -z "$cli" ] || [ "$cli" = "null" ]; then
     cli="codex"
-  fi
-  if [ "$model" = "null" ]; then
-    model=""
-  fi
-  if [ "$reasoning" = "null" ]; then
-    reasoning=""
   fi
 
   AGENT_COMMAND=()
   case "$cli" in
     codex)
-      AGENT_COMMAND=(codex exec)
-      if [ -n "$model" ]; then
-        AGENT_COMMAND+=(--model "$model")
-      fi
+      AGENT_COMMAND=(codex exec -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox)
       ;;
     claude)
-      AGENT_COMMAND=(claude --print --permission-mode bypassPermissions)
-      if [ -n "$model" ]; then
-        AGENT_COMMAND+=(--model "$model")
-      fi
-      if [ -n "$reasoning" ]; then
-        AGENT_COMMAND+=(--effort "$reasoning")
-      fi
+      AGENT_COMMAND=(claude --model claude-sonnet-4-6 --permission-mode bypassPermissions --no-session-persistence --print --output-format json)
       ;;
     *)
       fail "Unsupported CLI '${cli}' for agent '${agent}'"
@@ -347,13 +328,13 @@ if task is None:
     fail(f"Task not found in active-tasks.json: {task_id}")
 
 contract_path = task.get("contract_path")
-if not isinstance(contract_path, str) or not contract_path:
-    fail(f"Task {task_id} missing contract_path")
-
-contract_file = contract_path
-if not os.path.isabs(contract_file):
-    contract_file = os.path.join(project_dir, contract_file)
-contract_file = os.path.normpath(contract_file)
+if isinstance(contract_path, str) and contract_path:
+    contract_file = contract_path
+    if not os.path.isabs(contract_file):
+        contract_file = os.path.join(project_dir, contract_file)
+    contract_file = os.path.normpath(contract_file)
+else:
+    contract_file = os.path.join(project_dir, "docs", "nexum", "contracts", f"{task_id}.yaml")
 
 contract = load_yaml(contract_file)
 eval_strategy = contract.get("eval_strategy") if isinstance(contract.get("eval_strategy"), dict) else {}
@@ -377,10 +358,9 @@ local_url = eval_strategy.get("local_url")
 if not isinstance(local_url, str) or not local_url:
     local_url = ""
 
-default_local_url = os.path.join(project_dir, "nexum", "runtime", "eval")
-eval_dir = default_local_url
+eval_dir = os.path.join(project_dir, "nexum", "runtime", "eval")
 os.makedirs(eval_dir, exist_ok=True)
-eval_result_path = os.path.join(eval_dir, f"{task_id}-iter-{iteration}.yaml")
+eval_result_path = f"nexum/runtime/eval/{task_id}-iter-{iteration}.yaml"
 
 with open(prompt_template, "r", encoding="utf-8") as handle:
     template = handle.read()

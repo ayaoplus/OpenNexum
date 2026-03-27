@@ -66,7 +66,7 @@ send_system_event() {
   if ! command -v openclaw >/dev/null 2>&1; then
     return 0
   fi
-  openclaw system event --mode next-heartbeat --text "$text" >/dev/null 2>&1 || true
+  openclaw system event --mode now --text "$text" >/dev/null 2>&1 || true
 }
 
 append_event() {
@@ -122,7 +122,7 @@ maybe_set_int(payload, "iteration", "EVENT_ITERATION")
 maybe_set_int(payload, "next_iteration", "EVENT_NEXT_ITERATION")
 maybe_set_int(payload, "exit_code", "EVENT_EXIT_CODE")
 maybe_set_int(payload, "max_iterations", "EVENT_MAX_ITERATIONS")
-maybe_set_json(payload, "files", "EVENT_FILES_JSON")
+maybe_set_json(payload, "extra_files", "EVENT_FILES_JSON")
 maybe_set_json(payload, "system_errors", "EVENT_SYSTEM_ERRORS_JSON")
 
 directory = os.path.dirname(events_file)
@@ -193,15 +193,11 @@ PY
 }
 
 build_json_array() {
-  if [ "$#" -eq 0 ]; then
-    printf '[]'
-    return 0
-  fi
-  printf '%s\n' "$@" | python3 - <<'PY'
+  python3 - "$@" <<'PY'
 import json
 import sys
 
-items = [line.rstrip("\n") for line in sys.stdin if line.rstrip("\n")]
+items = [item for item in sys.argv[1:] if item]
 sys.stdout.write(json.dumps(items, ensure_ascii=False))
 PY
 }
@@ -788,39 +784,20 @@ PY
 build_agent_command() {
   local agent="$1"
   local cli
-  local model
-  local reasoning
 
   cli="$(resolve_config_value "agents.${agent}.cli")"
-  model="$(resolve_config_value "agents.${agent}.model")"
-  reasoning="$(resolve_config_value "agents.${agent}.reasoning")"
 
   if [ -z "$cli" ] || [ "$cli" = "null" ]; then
     cli="codex"
-  fi
-  if [ "$model" = "null" ]; then
-    model=""
-  fi
-  if [ "$reasoning" = "null" ]; then
-    reasoning=""
   fi
 
   AGENT_COMMAND=()
   case "$cli" in
     codex)
-      AGENT_COMMAND=(codex exec)
-      if [ -n "$model" ]; then
-        AGENT_COMMAND+=(--model "$model")
-      fi
+      AGENT_COMMAND=(codex exec -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox)
       ;;
     claude)
-      AGENT_COMMAND=(claude --print --permission-mode bypassPermissions)
-      if [ -n "$model" ]; then
-        AGENT_COMMAND+=(--model "$model")
-      fi
-      if [ -n "$reasoning" ]; then
-        AGENT_COMMAND+=(--effort "$reasoning")
-      fi
+      AGENT_COMMAND=(claude --model claude-sonnet-4-6 --permission-mode bypassPermissions --no-session-persistence --print --output-format json)
       ;;
     *)
       fail "Unsupported CLI '${cli}' for agent '${agent}'"
@@ -834,7 +811,7 @@ build_retry_prompt() {
   local feedback="$3"
   local system_errors_json="$4"
   local next_iteration="$5"
-  local prompt_file="/tmp/nexum-generator-feedback-${TASK_ID}.txt"
+  local prompt_file="/tmp/nexum-feedback-${TASK_ID}.txt"
 
   CONTEXT_JSON="$context_json" \
   VERDICT="$verdict" \
@@ -980,9 +957,9 @@ if [ "$ROLE" = "generator" ]; then
     NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
       "$TASK_ID" \
       failed \
-      "last_error=generator_exit_${EXIT_CODE}"
-    EVENT_ROLE="generator" EVENT_EXIT_CODE="$EXIT_CODE" EVENT_REASON="generator_exit" append_event "task_failed"
-    send_notification "❌ ${TASK_ID} generator 退出失败（exit ${EXIT_CODE}）"
+      "last_error=exit ${EXIT_CODE}"
+    EVENT_ROLE="generator" EVENT_EXIT_CODE="$EXIT_CODE" EVENT_REASON="exit_${EXIT_CODE}" append_event "task_failed"
+    send_notification "❌ ${TASK_ID} generator failed (exit ${EXIT_CODE})"
     exit 0
   fi
 
@@ -990,17 +967,25 @@ if [ "$ROLE" = "generator" ]; then
   [ -n "$BASE_COMMIT" ] || fail "Task ${TASK_ID} missing base_commit"
   [ -n "$CONTRACT_PATH" ] || fail "Task ${TASK_ID} missing contract_path"
 
-  mapfile -t SCOPE_FILES < <(json_array_lines "$CONTEXT_JSON" "contract.scope.files")
-  declare -A ALLOWED_FILES=()
-  for path in "${SCOPE_FILES[@]}"; do
-    ALLOWED_FILES["$path"]=1
-  done
-
-  mapfile -t CHANGED_FILES < <(git -C "$PROJECT_DIR" diff "${BASE_COMMIT}..HEAD" --name-only)
+  SCOPE_FILES=()
+  while IFS= read -r scope_file; do
+    SCOPE_FILES+=("$scope_file")
+  done < <(json_array_lines "$CONTEXT_JSON" "contract.scope.files")
+  CHANGED_FILES=()
+  while IFS= read -r changed_file; do
+    CHANGED_FILES+=("$changed_file")
+  done < <(git -C "$PROJECT_DIR" diff "${BASE_COMMIT}..HEAD" --name-only)
   VIOLATIONS=()
   for path in "${CHANGED_FILES[@]}"; do
+    in_scope=0
     [ -n "$path" ] || continue
-    if [ -z "${ALLOWED_FILES[$path]+x}" ]; then
+    for scope_file in "${SCOPE_FILES[@]}"; do
+      if [ "$path" = "$scope_file" ]; then
+        in_scope=1
+        break
+      fi
+    done
+    if [ "$in_scope" -eq 0 ]; then
       VIOLATIONS+=("$path")
     fi
   done
@@ -1014,13 +999,9 @@ if [ "$ROLE" = "generator" ]; then
       "last_error=scope_violation"
     EVENT_ROLE="generator" \
       EVENT_REASON="scope_violation" \
-      EVENT_COMMIT_HASH="$head_commit" \
       EVENT_FILES_JSON="$violations_json" \
-      append_event "scope_violation"
-    send_notification "⚠️ ${TASK_ID} scope 违规，已冻结
-┣ 违规文件: ${VIOLATIONS[*]}
-┣ Commit: ${head_commit}（已保留现场）
-┗ 建议: 执行 nexum-revert.sh ${TASK_ID} 回滚，或手动检查后继续"
+      append_event "task_failed"
+    send_notification "⚠️ ${TASK_ID} scope 违规，冻结。违规文件: ${VIOLATIONS[*]}. 执行 nexum-revert.sh ${TASK_ID} 可回滚"
     exit 0
   fi
 
@@ -1043,14 +1024,19 @@ if [ "$ROLE" = "generator" ]; then
     exit 0
   fi
 
-  (
-    NEXUM_PROJECT_DIR="$PROJECT_DIR" "$DISPATCH_EVALUATOR_SCRIPT" "$TASK_ID"
-  ) >/tmp/nexum-dispatch-evaluator-"$TASK_ID".log 2>&1 &
+  if ! NEXUM_PROJECT_DIR="$PROJECT_DIR" "$DISPATCH_EVALUATOR_SCRIPT" "$TASK_ID"; then
+    NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
+      "$TASK_ID" \
+      failed \
+      "last_error=dispatch_evaluator_failed"
+    EVENT_ROLE="generator" EVENT_REASON="dispatch_evaluator_failed" append_event "task_failed"
+    send_notification "❌ ${TASK_ID} generator done but evaluator dispatch failed"
+    send_system_event "eval_dispatch_failed: ${TASK_ID}"
+    exit 0
+  fi
 
-  send_system_event "OpenNexum task ${TASK_ID} generator finished; evaluator dispatch requested."
-  send_notification "🧪 ${TASK_ID} generator 完成，正在进入 eval
-┣ Commit: ${head_commit}
-┗ Iteration: ${ITERATION}"
+  send_system_event "eval_started: ${TASK_ID}"
+  send_notification "🔍 ${TASK_ID} generator done → eval starting (iter ${ITERATION})"
   exit 0
 fi
 
@@ -1063,6 +1049,7 @@ if [ ! -f "$EVAL_RESULT_PATH" ]; then
   send_notification "❌ ${TASK_ID} evaluator 未产出结果文件
 ┣ 期望路径: ${EVAL_RESULT_PATH}
 ┗ Evaluator exit: ${EXIT_CODE}"
+  send_system_event "eval_result_missing: ${TASK_ID}"
   exit 0
 fi
 
@@ -1103,10 +1090,7 @@ case "$VERDICT" in
       append_event "task_done"
 
     duration="$(format_duration "$STARTED_AT" "$completed_at")"
-    send_notification "✅ ${TASK_ID} 完成（${ITERATION} 轮迭代）
-┣ ⏱ 耗时: ${duration}
-┣ 💾 Commit: ${COMMIT_HASH}
-┗ 🎯 Eval: ${PASS_COUNT}/${TOTAL_COUNT} criteria passed"
+    send_notification "✅ ${TASK_ID} done (iter ${ITERATION}, elapsed ${duration})"
 
     batch_json="$(all_tasks_done_json)"
     if [ "$(json_value "$batch_json" "all_done" || true)" = "true" ]; then
@@ -1118,7 +1102,7 @@ case "$VERDICT" in
 ┗ Done: ${done_count:-0}/${total_count:-0}"
     fi
 
-    send_system_event "OpenNexum task ${TASK_ID} marked done."
+    send_system_event "Done: ${TASK_ID} (iter ${ITERATION})"
     exit 0
     ;;
   fail|error|inconclusive)
@@ -1135,7 +1119,7 @@ case "$VERDICT" in
         EVENT_NEXT_ITERATION="$next_iteration" \
         EVENT_FEEDBACK="$FEEDBACK" \
         EVENT_SYSTEM_ERRORS_JSON="$SYSTEM_ERRORS_JSON" \
-        append_event "eval_fail"
+        append_event "eval_done"
 
       [ -n "$GENERATOR_AGENT" ] || fail "Contract missing generator agent for ${TASK_ID}"
       retry_prompt="$(build_retry_prompt "$CONTEXT_JSON" "$VERDICT" "$FEEDBACK" "$SYSTEM_ERRORS_JSON" "$next_iteration")"
@@ -1162,9 +1146,7 @@ case "$VERDICT" in
         retry_hint="
 ┗ system_errors: $(json_value "$EVAL_JSON" "system_errors" || printf '[]')"
       fi
-      send_notification "🔁 ${TASK_ID} eval ${VERDICT}，进入第 ${next_iteration} 轮
-┣ Generator: ${GENERATOR_AGENT}
-┗ 反馈已注入重试 prompt${retry_hint}"
+      send_notification "🔁 ${TASK_ID} iter ${ITERATION} failed → retry iter ${next_iteration}${retry_hint}"
       exit 0
     fi
 
@@ -1180,12 +1162,15 @@ case "$VERDICT" in
       EVENT_SYSTEM_ERRORS_JSON="$SYSTEM_ERRORS_JSON" \
       append_event "task_escalated"
 
-    send_notification "🚨 ${TASK_ID} 需要人工介入（超过 ${MAX_ITERATIONS} 次迭代）
-┣ verdict: ${VERDICT}
-┣ system_errors: ${SYSTEM_ERRORS_JSON}
-┗ 最后 eval 反馈:
-${FEEDBACK}"
-    send_system_event "OpenNexum task ${TASK_ID} escalated after evaluator verdict ${VERDICT}."
+    feedback_excerpt="$(
+      FEEDBACK_TEXT="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}" python3 - <<'PY'
+import os
+text = os.environ["FEEDBACK_TEXT"].replace("\n", " ").replace("\r", " ").strip()
+print(text[:100])
+PY
+    )"
+    send_notification "🚨 ${TASK_ID} 已达最大 iteration (${MAX_ITERATIONS})，需人工介入. 最后 feedback: ${feedback_excerpt}"
+    send_system_event "Escalated: ${TASK_ID} (verdict ${VERDICT})"
     exit 0
     ;;
   *)
