@@ -1,0 +1,154 @@
+#!/bin/bash
+# Atomically update a task in active-tasks.json and unlock downstream dependencies.
+set -euo pipefail
+
+PROJECT_DIR="${NEXUM_PROJECT_DIR:-$(pwd -P)}"
+TASK_FILE="${PROJECT_DIR}/nexum/active-tasks.json"
+
+usage() {
+  echo "Usage: update-task-status.sh <task_id> <status> [key=value ...]" >&2
+  exit 1
+}
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "flock command not found" >&2
+  exit 1
+fi
+
+[ "$#" -ge 2 ] || usage
+
+TASK_ID="$1"
+STATUS="$2"
+shift 2
+
+LOCK_FILE="${TASK_FILE}.lock"
+mkdir -p "$(dirname "$TASK_FILE")"
+
+(
+  flock -x 200
+  TASK_FILE="$TASK_FILE" python3 - "$TASK_ID" "$STATUS" "$@" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime, timezone
+from json import JSONDecodeError
+
+TASK_FILE = os.environ["TASK_FILE"]
+TASK_ID = sys.argv[1]
+STATUS = sys.argv[2]
+RAW_FIELDS = sys.argv[3:]
+
+VALID_STATUSES = {
+    "pending",
+    "blocked",
+    "running",
+    "evaluating",
+    "done",
+    "failed",
+    "escalated",
+    "cancelled",
+}
+ALLOWED_FIELDS = {
+    "base_commit",
+    "commit_hash",
+    "tmux_session",
+    "eval_tmux_session",
+    "eval_result_path",
+    "started_at",
+    "completed_at",
+    "last_error",
+    "iteration",
+}
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def parse_field(raw):
+    if raw == "--field":
+        return None
+    if "=" not in raw:
+        fail(f"Invalid field assignment: {raw}")
+    key, value = raw.split("=", 1)
+    if key not in ALLOWED_FIELDS:
+        fail(f"Unsupported field: {key}")
+    if key == "iteration":
+        try:
+            return key, int(value)
+        except ValueError as exc:
+            fail("iteration must be an integer")
+            raise exc
+    if value == "null":
+        return key, None
+    return key, value
+
+
+if STATUS not in VALID_STATUSES:
+    fail(f"Invalid status: {STATUS}")
+
+fields = {}
+for raw_field in RAW_FIELDS:
+    parsed = parse_field(raw_field)
+    if parsed is None:
+        continue
+    key, value = parsed
+    fields[key] = value
+
+try:
+    with open(TASK_FILE, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except FileNotFoundError as exc:
+    fail(f"Task file not found: {TASK_FILE}")
+    raise exc
+except JSONDecodeError as exc:
+    fail(f"Invalid JSON in {TASK_FILE}: {exc}")
+    raise exc
+
+if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+    fail(f"Invalid task file structure: {TASK_FILE}")
+
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+tasks = data["tasks"]
+task_by_id = {task.get("id"): task for task in tasks if isinstance(task, dict) and "id" in task}
+
+target = task_by_id.get(TASK_ID)
+if target is None:
+    raise SystemExit(2)
+
+target["status"] = STATUS
+target["updated_at"] = now
+for key, value in fields.items():
+    target[key] = value
+
+if STATUS == "done":
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("status") != "blocked":
+            continue
+        depends_on = task.get("depends_on") or []
+        if not isinstance(depends_on, list):
+            continue
+        dependency_statuses = [task_by_id.get(dep_id, {}).get("status") for dep_id in depends_on]
+        if dependency_statuses and any(status in {"escalated", "cancelled"} for status in dependency_statuses):
+            task["status"] = "escalated"
+            task["updated_at"] = now
+        elif all(status == "done" for status in dependency_statuses):
+            task["status"] = "pending"
+            task["updated_at"] = now
+
+directory = os.path.dirname(TASK_FILE)
+fd, tmp_path = tempfile.mkstemp(prefix=".active-tasks.", suffix=".tmp", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, TASK_FILE)
+finally:
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+PY
+) 200>"$LOCK_FILE"
