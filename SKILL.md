@@ -70,6 +70,7 @@ Tmux sessions are prefixed `nexum-`: `nexum-plan`, `nexum-codex-1`, `nexum-eval`
 ## Orchestrator Rules
 
 - **Always create a Contract YAML before dispatching.** No contract = no dispatch.
+- **Task ID format:** Must match `^[A-Z]+-[0-9]+$` (e.g., `TASK-001`, `FIX-007`). IDs like `T001` or `task-1` are rejected by dispatch.sh.
 - Use `dispatch.sh --role generator` for coding work; `dispatch-evaluator.sh <task_id>` (or `dispatch.sh --role evaluator`) for evaluation.
 - On `task_done` system event: read the eval result at `nexum/runtime/eval/TASK-ID-iter-N.yaml`.
 - On `eval_done` pass: scan `active-tasks.json` for newly unblocked tasks (all `depends_on` satisfied) and dispatch them.
@@ -97,7 +98,7 @@ eval_strategy:
   type: unit          # unit | integration | e2e | review | composite
   criteria:
     - id: C1
-      description: "Criterion description"
+      desc: "Criterion description"
 generator: codex-1
 evaluator: eval
 max_iterations: 3
