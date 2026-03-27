@@ -220,6 +220,15 @@ if eval_type == "e2e":
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
     rendered = rendered.replace("{{LOCAL_URL}}", local_url)
+elif eval_type == "integration":
+    integration_template_path = os.path.join(skill_root, "references", "prompt-evaluator-integration.md")
+    if not os.path.isfile(integration_template_path):
+        fail(f"integration prompt template not found: {integration_template_path}")
+    with open(integration_template_path, "r", encoding="utf-8") as handle:
+        template = handle.read()
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
 else:
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
