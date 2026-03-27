@@ -629,6 +629,41 @@ if [ "$ROLE" = "evaluator" ]; then
       fail "Unsupported eval_strategy.type: ${EVAL_TYPE}"
       ;;
   esac
+
+  if [ "$EVAL_TYPE" = "composite" ]; then
+    if ! CONTRACT_JSON_FILE="$CONTRACT_JSON_FILE" python3 - <<'PY'
+import json
+import os
+import sys
+
+valid_types = {"unit", "integration", "e2e", "review", "composite"}
+
+with open(os.environ["CONTRACT_JSON_FILE"], "r", encoding="utf-8") as handle:
+    contract = json.load(handle)
+
+eval_strategy = contract.get("eval_strategy")
+sub_strategies = eval_strategy.get("sub_strategies") if isinstance(eval_strategy, dict) else None
+
+if not isinstance(sub_strategies, list) or not sub_strategies:
+    print("Contract eval_strategy.sub_strategies must be a non-empty array when eval_strategy.type=composite", file=sys.stderr)
+    raise SystemExit(1)
+
+for index, sub_strategy in enumerate(sub_strategies):
+    if not isinstance(sub_strategy, dict):
+        print(f"Contract eval_strategy.sub_strategies[{index}] must be an object", file=sys.stderr)
+        raise SystemExit(1)
+    sub_type = sub_strategy.get("type")
+    if sub_type not in valid_types:
+        print(
+            f"Unsupported eval_strategy.sub_strategies[{index}].type: {sub_type}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+PY
+    then
+      fail "Invalid composite eval_strategy configuration"
+    fi
+  fi
 fi
 
 case "$ROLE" in
