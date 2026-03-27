@@ -61,11 +61,15 @@ TASK_ID="$1"
 [ -x "$SWARM_CONFIG_SCRIPT" ] || fail "Missing required script: $SWARM_CONFIG_SCRIPT"
 [ -f "$PROMPT_TEMPLATE" ] || fail "Prompt template not found: $PROMPT_TEMPLATE"
 
+DEFAULT_LOCAL_URL="$(resolve_config_value "eval.default_local_url")"
+
 context_output="$(
   TASK_ID="$TASK_ID" \
   PROJECT_DIR="$PROJECT_DIR" \
   ACTIVE_TASKS_FILE="$ACTIVE_TASKS_FILE" \
   PROMPT_TEMPLATE="$PROMPT_TEMPLATE" \
+  SKILL_ROOT="$SKILL_ROOT" \
+  DEFAULT_LOCAL_URL="$DEFAULT_LOCAL_URL" \
   YAML_TO_JSON_SCRIPT="$SCRIPT_DIR/yaml-to-json.sh" \
   python3 - <<'PY'
 import json
@@ -78,7 +82,12 @@ task_id = os.environ["TASK_ID"]
 project_dir = os.environ["PROJECT_DIR"]
 active_tasks_file = os.environ["ACTIVE_TASKS_FILE"]
 prompt_template = os.environ["PROMPT_TEMPLATE"]
+skill_root = os.environ.get("SKILL_ROOT", "")
+default_local_url = os.environ.get("DEFAULT_LOCAL_URL", "").strip()
 yaml_to_json_script = os.environ["YAML_TO_JSON_SCRIPT"]
+
+if default_local_url == "null":
+    default_local_url = ""
 
 
 def fail(message, code=1):
@@ -180,6 +189,8 @@ if not isinstance(max_iterations, int):
 local_url = eval_strategy.get("local_url")
 if not isinstance(local_url, str) or not local_url:
     local_url = ""
+else:
+    local_url = local_url.strip()
 
 eval_dir = os.path.join(project_dir, "nexum", "runtime", "eval")
 os.makedirs(eval_dir, exist_ok=True)
@@ -196,18 +207,26 @@ replacements = {
     "{{EVAL_RESULT_PATH}}": eval_result_path,
 }
 
-for placeholder, value in replacements.items():
-    rendered = rendered.replace(placeholder, value)
-
 if eval_type == "e2e":
-    local_url = local_url or "http://localhost:3000"
-elif not local_url:
-    local_url = ""
-
-if local_url:
-    rendered = rendered.rstrip() + f"\n\n## Local App\n\n- Eval type: {eval_type}\n- Local URL: {local_url}\n"
+    local_url = local_url or default_local_url
+    if not local_url:
+        fail("e2e eval requires local_url in contract or eval.default_local_url in config")
+    e2e_template_path = os.path.join(skill_root, "references", "prompt-evaluator-e2e.md")
+    if not os.path.isfile(e2e_template_path):
+        fail(f"e2e prompt template not found: {e2e_template_path}")
+    with open(e2e_template_path, "r", encoding="utf-8") as handle:
+        template = handle.read()
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    rendered = rendered.replace("{{LOCAL_URL}}", local_url)
 else:
-    rendered = rendered.rstrip() + f"\n\n## Eval Strategy\n\n- Eval type: {eval_type}\n"
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    if local_url:
+        rendered = rendered.rstrip() + f"\n\n## Local App\n\n- Eval type: {eval_type}\n- Local URL: {local_url}\n"
+    else:
+        rendered = rendered.rstrip() + f"\n\n## Eval Strategy\n\n- Eval type: {eval_type}\n"
 
 prompt_path = f"/tmp/nexum-eval-prompt-{task_id}.txt"
 with open(prompt_path, "w", encoding="utf-8") as handle:
