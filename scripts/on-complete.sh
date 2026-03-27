@@ -12,7 +12,6 @@ UPDATE_TASK_STATUS_SCRIPT="${SCRIPT_DIR}/update-task-status.sh"
 DISPATCH_SCRIPT="${SCRIPT_DIR}/dispatch.sh"
 DISPATCH_EVALUATOR_SCRIPT="${SCRIPT_DIR}/dispatch-evaluator.sh"
 SWARM_CONFIG_SCRIPT="${SCRIPT_DIR}/swarm-config.sh"
-GENERATOR_TEMPLATE="${SKILL_ROOT}/references/prompt-generator-coding.md"
 
 usage() {
   cat >&2 <<'EOF'
@@ -492,13 +491,14 @@ build_retry_prompt() {
   local system_errors_json="$4"
   local next_iteration="$5"
   local prompt_file="/tmp/nexum-feedback-${TASK_ID}.txt"
+  local generator_template="${SKILL_ROOT}/references/prompt-generator-coding.md"
 
   CONTEXT_JSON="$context_json" \
   VERDICT="$verdict" \
   FEEDBACK="$feedback" \
   SYSTEM_ERRORS_JSON="$system_errors_json" \
   NEXT_ITERATION="$next_iteration" \
-  GENERATOR_TEMPLATE="$GENERATOR_TEMPLATE" \
+  GENERATOR_TEMPLATE="$generator_template" \
   PROMPT_FILE="$prompt_file" \
   python3 - <<'PY'
 import json
@@ -516,6 +516,11 @@ task = context.get("task", {}) if isinstance(context.get("task"), dict) else {}
 contract = context.get("contract", {}) if isinstance(context.get("contract"), dict) else {}
 scope = contract.get("scope", {}) if isinstance(contract.get("scope"), dict) else {}
 eval_strategy = contract.get("eval_strategy", {}) if isinstance(contract.get("eval_strategy"), dict) else {}
+contract_type = contract.get("type") or "coding"
+if contract_type in ("creative", "task"):
+    writing_template = os.path.join(os.path.dirname(generator_template), "prompt-generator-writing.md")
+    if os.path.exists(writing_template):
+        generator_template = writing_template
 
 
 def as_list(value):
