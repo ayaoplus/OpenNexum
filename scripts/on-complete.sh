@@ -787,6 +787,17 @@ case "$VERDICT" in
       send_notification "🎉 批次完成
 ┣ Batch: ${batch_id:-unknown}
 ┗ Done: ${done_count:-0}/${total_count:-0}"
+
+      # Check if harvest.auto_trigger is enabled
+      harvest_auto="$(NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/swarm-config.sh" get harvest.auto_trigger 2>/dev/null || echo "true")"
+      if [ "$harvest_auto" = "true" ] && [ -x "$SCRIPT_DIR/harvest.sh" ]; then
+        send_notification "🌾 开始 harvest（Phase 3 lesson 收割）..."
+        if NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/harvest.sh" 2>&1; then
+          send_notification "✅ harvest 完成"
+        else
+          send_notification "⚠️ harvest 失败（exit $?），请检查日志"
+        fi
+      fi
     fi
 
     send_system_event "Done: ${TASK_ID} (iter ${ITERATION})"
