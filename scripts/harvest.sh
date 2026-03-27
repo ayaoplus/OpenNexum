@@ -113,6 +113,7 @@ STOPWORDS = {
     "should",
     "use",
 }
+IDF_CACHE = {}
 
 
 def now_iso():
@@ -211,17 +212,63 @@ def tokenize_words(value):
     return {token for token in re.findall(r"\w+", normalize_text(value).lower()) if token}
 
 
+def _tokenize_terms(value):
+    return [token for token in re.findall(r"\w+", normalize_text(value).lower()) if token]
+
+
+def _compute_tf(tokens):
+    """Term frequency: count / total"""
+    if not tokens:
+        return {}
+    total = len(tokens)
+    counts = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return {term: count / total for term, count in counts.items()}
+
+
+def _build_idf(corpus_tokens_list):
+    """Inverse document frequency across the corpus"""
+    import math
+
+    n = len(corpus_tokens_list)
+    if n == 0:
+        return {}
+    df = {}
+    for tokens in corpus_tokens_list:
+        for term in set(tokens):
+            df[term] = df.get(term, 0) + 1
+    return {term: math.log((n + 1) / (count + 1)) + 1.0 for term, count in df.items()}
+
+
+def _tfidf_vector(tokens, idf):
+    tf = _compute_tf(tokens)
+    return {term: tf_val * idf.get(term, 1.0) for term, tf_val in tf.items()}
+
+
+def _cosine(vec_a, vec_b):
+    import math
+
+    if not vec_a or not vec_b:
+        return 0.0
+    dot = sum(vec_a.get(term, 0.0) * vec_b.get(term, 0.0) for term in vec_a)
+    norm_a = math.sqrt(sum(value * value for value in vec_a.values()))
+    norm_b = math.sqrt(sum(value * value for value in vec_b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 def similarity(left, right):
-    left_words = tokenize_words(left)
-    right_words = tokenize_words(right)
-    if not left_words and not right_words:
+    left_tokens = _tokenize_terms(left)
+    right_tokens = _tokenize_terms(right)
+    if not left_tokens and not right_tokens:
         return 1.0
-    if not left_words or not right_words:
+    if not left_tokens or not right_tokens:
         return 0.0
-    union = left_words | right_words
-    if not union:
-        return 0.0
-    return len(left_words & right_words) / len(union)
+    vec_a = _tfidf_vector(left_tokens, IDF_CACHE)
+    vec_b = _tfidf_vector(right_tokens, IDF_CACHE)
+    return _cosine(vec_a, vec_b)
 
 
 def contradiction(left, right):
@@ -350,7 +397,7 @@ def compare_lesson(candidate, accepted):
     for existing in accepted:
         if candidate["affected"] != existing["affected"]:
             continue
-        if similarity(candidate["right"], existing["right"]) > 0.8:
+        if similarity(candidate["right"], existing["right"]) > 0.65:
             return "DUPLICATE", existing
         if similarity(candidate["trigger"], existing["trigger"]) >= 0.8 and contradiction(candidate["right"], existing["right"]):
             return "CONTRADICTION", existing
@@ -573,6 +620,13 @@ for lesson in parsed_lessons:
         invalid_lessons.append(lesson)
 
 technical_all.sort(key=lambda item: item["source"])
+all_lesson_texts = []
+for lesson in technical_all:
+    tokens = _tokenize_terms(lesson["right"])
+    tokens += _tokenize_terms(lesson["trigger"])
+    all_lesson_texts.append(tokens)
+IDF_CACHE = _build_idf(all_lesson_texts)
+
 accepted_technical = []
 all_conflicts = []
 new_conflicts = []
