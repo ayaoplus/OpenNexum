@@ -7,7 +7,7 @@ PROJECT_DIR="${NEXUM_PROJECT_DIR:-$(pwd -P)}"
 TASK_FILE="${PROJECT_DIR}/nexum/active-tasks.json"
 
 usage() {
-  echo "Usage: nexum-revert.sh <task_id>" >&2
+  echo "Usage: nexum-revert.sh <task_id> [--force]" >&2
   exit 1
 }
 
@@ -16,8 +16,28 @@ fail() {
   exit 1
 }
 
-[ "$#" -eq 1 ] || usage
-TASK_ID="$1"
+FORCE=false
+TASK_ID=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force)
+      FORCE=true
+      shift
+      ;;
+    --*)
+      usage
+      ;;
+    *)
+      if [ -n "$TASK_ID" ]; then
+        usage
+      fi
+      TASK_ID="$1"
+      shift
+      ;;
+  esac
+done
+
+[ -n "$TASK_ID" ] || usage
 
 [ -d "$PROJECT_DIR" ] || fail "Project directory not found: $PROJECT_DIR"
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
@@ -62,7 +82,13 @@ PY
 
 IFS=$'\t' read -r task_status base_commit <<<"$task_fields"
 
-[ "$task_status" = "failed" ] || fail "Task ${TASK_ID} must be in failed status to revert (current: ${task_status})"
+case "$task_status" in
+  failed|escalated)
+    ;;
+  *)
+    fail "Task ${TASK_ID} must be in failed or escalated status to revert (current: ${task_status})"
+    ;;
+esac
 [ -n "$base_commit" ] || fail "Task ${TASK_ID} does not have a base_commit"
 
 cd "$PROJECT_DIR"
@@ -74,16 +100,18 @@ else
   echo "(no commits to revert)"
 fi
 
-printf 'Are you sure you want to revert %s commits? [y/N] ' "$TASK_ID"
-read -r confirm
+if [ "$FORCE" = false ]; then
+  printf 'Are you sure you want to revert %s commits? [y/N] ' "$TASK_ID"
+  read -r confirm
 
-case "$confirm" in
-  y|Y)
-    ;;
-  *)
-    exit 0
-    ;;
-esac
+  case "$confirm" in
+    y|Y)
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+fi
 
 commit_count="$(git rev-list --count "${base_commit}..HEAD")" || fail "Failed to count commits from ${base_commit}..HEAD"
 if [ "$commit_count" -gt 0 ]; then
@@ -92,5 +120,53 @@ if [ "$commit_count" -gt 0 ]; then
   git push || echo "⚠️  Warning: git push failed. Local revert committed but not pushed. Run 'git push' manually."
 fi
 
-"$SCRIPT_DIR/update-task-status.sh" "$TASK_ID" cancelled
+# Auto-escalate downstream blocked tasks that depended on the reverted task.
+NEXUM_PROJECT_DIR="$PROJECT_DIR" REVERTED_TASK_ID="$TASK_ID" \
+  TASK_FILE="$TASK_FILE" \
+  UPDATE_SCRIPT="$SCRIPT_DIR/update-task-status.sh" \
+  python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+task_file = os.environ["TASK_FILE"]
+reverted_id = os.environ["REVERTED_TASK_ID"]
+update_script = os.environ["UPDATE_SCRIPT"]
+project_dir = os.environ["NEXUM_PROJECT_DIR"]
+
+with open(task_file, encoding="utf-8") as f:
+    data = json.load(f)
+
+downstream = [
+    t for t in data.get("tasks", [])
+    if isinstance(t, dict)
+    and t.get("status") == "blocked"
+    and reverted_id in (t.get("depends_on") or [])
+]
+
+for task in downstream:
+    tid = task["id"]
+    env = {**os.environ, "NEXUM_PROJECT_DIR": project_dir}
+    result = subprocess.run(
+        [update_script, tid, "escalated", f"last_error=upstream_{reverted_id}_cancelled"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"↑ Escalated downstream task {tid} (was blocked on {reverted_id})")
+    else:
+        print(f"Warning: failed to escalate {tid}: {result.stderr.strip()}", file=sys.stderr)
+PY
+
+# Notify via Telegram if configured.
+notify_target="$(NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/swarm-config.sh" get notify.target 2>/dev/null || echo "")"
+if [ -n "$notify_target" ] && [ "$notify_target" != "null" ] && command -v openclaw >/dev/null 2>&1; then
+  openclaw message send --channel telegram --target "$notify_target" \
+    -m "↩️ ${TASK_ID} reverted → cancelled. Downstream blocked tasks escalated if any." \
+    >/dev/null 2>&1 || true
+fi
+
+"$SCRIPT_DIR/update-task-status.sh" "$TASK_ID" cancelled --field
 echo "✅ ${TASK_ID} reverted successfully. Status → cancelled."
