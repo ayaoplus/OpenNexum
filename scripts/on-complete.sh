@@ -934,6 +934,8 @@ if system_errors:
 rendered = retry_block if not base_prompt else base_prompt + "\n\n---\n\n" + retry_block
 
 with open(prompt_file, "w", encoding="utf-8") as handle:
+    # TODO(Phase 3): inject relevant lessons from docs/lessons/ filtered by task tags
+    # For now, RELEVANT_LESSONS is intentionally left empty
     handle.write(rendered)
     if not rendered.endswith("\n"):
         handle.write("\n")

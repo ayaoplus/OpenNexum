@@ -89,7 +89,7 @@ commit_count="$(git rev-list --count "${base_commit}..HEAD")" || fail "Failed to
 if [ "$commit_count" -gt 0 ]; then
   git revert "${base_commit}..HEAD" --no-commit
   git commit -m "revert(nexum): roll back ${TASK_ID} commits"
-  git push
+  git push || echo "⚠️  Warning: git push failed. Local revert committed but not pushed. Run 'git push' manually."
 fi
 
 "$SCRIPT_DIR/update-task-status.sh" "$TASK_ID" cancelled

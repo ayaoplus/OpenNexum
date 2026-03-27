@@ -527,6 +527,8 @@ replacements = {
     "{{DELIVERABLES}}": bullet_lines(as_list(contract.get("deliverables"))),
     "{{CRITERIA_PREVIEW}}": criteria_preview(criteria),
     "{{CRITERIA_LIST}}": criteria_preview(criteria),
+    # TODO(Phase 3): inject relevant lessons from docs/lessons/ filtered by task tags
+    # For now, RELEVANT_LESSONS is intentionally left empty
     "{{RELEVANT_LESSONS}}": "",
     "{{GIT_COMMIT_CMD}}": git_commit_cmd,
     "{{EVAL_RESULT_PATH}}": eval_result_path,
@@ -809,6 +811,20 @@ CONTRACT_EVALUATOR="$(json_get "evaluator" || true)"
 [ -n "$CONTRACT_NAME" ] || fail "Contract missing required field: name"
 [ -n "$CONTRACT_GENERATOR" ] || fail "Contract missing required field: generator"
 [ -n "$CONTRACT_EVALUATOR" ] || fail "Contract missing required field: evaluator"
+
+if [ "$ROLE" = "evaluator" ]; then
+  EVAL_TYPE="$(json_get "eval_strategy.type" || true)"
+  case "${EVAL_TYPE:-}" in
+    unit|integration|e2e|review|composite)
+      ;;
+    "")
+      fail "Contract eval_strategy.type is missing"
+      ;;
+    *)
+      fail "Unsupported eval_strategy.type: ${EVAL_TYPE}"
+      ;;
+  esac
+fi
 
 case "$ROLE" in
   generator)

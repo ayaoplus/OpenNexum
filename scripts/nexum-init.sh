@@ -149,14 +149,18 @@ PY
 write_active_tasks_json() {
   local target_file="$1"
   TARGET_FILE="$target_file" PROJECT_NAME="$PROJECT_NAME" TIMESTAMP_UTC="$TIMESTAMP_UTC" python3 - <<'PY'
+from datetime import datetime, timezone
 import json
 import os
 import pathlib
+import re
 
 target_path = pathlib.Path(os.environ["TARGET_FILE"])
 timestamp = os.environ["TIMESTAMP_UTC"]
+project_slug = re.sub(r"[^a-z0-9]+", "-", os.environ["PROJECT_NAME"].lower()).strip("-")
+batch_id = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{project_slug}"
 payload = {
-    "batch_id": "init",
+    "batch_id": batch_id,
     "project": os.environ["PROJECT_NAME"],
     "repo": "",
     "created_at": timestamp,
