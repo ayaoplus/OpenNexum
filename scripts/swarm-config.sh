@@ -85,13 +85,21 @@ def get_by_path(data, dot_path):
     return True, current
 
 
-def resolve_env(value):
+def expand_env_vars(value):
     if isinstance(value, str):
-        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), ""), value)
+        def replacer(match):
+            var_name = match.group(1) or match.group(2)
+            return os.environ.get(var_name, match.group(0))
+
+        return re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+            replacer,
+            value,
+        )
     if isinstance(value, list):
-        return [resolve_env(item) for item in value]
+        return [expand_env_vars(item) for item in value]
     if isinstance(value, dict):
-        return {key: resolve_env(item) for key, item in value.items()}
+        return {key: expand_env_vars(item) for key, item in value.items()}
     return value
 
 
@@ -123,7 +131,7 @@ elif command in {"get", "resolve"}:
     if not found:
         raise SystemExit(0)
     if command == "resolve":
-        value = resolve_env(value)
+        value = expand_env_vars(value)
     emit(value)
     if not isinstance(value, str):
         sys.stdout.write("\n")
