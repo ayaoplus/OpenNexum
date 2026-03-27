@@ -1,5 +1,284 @@
 # OpenNexum
 
-Contract-driven multi-agent orchestration framework for personal developers.
+**Contract-driven multi-agent orchestration for personal developers.**  
+**合约驱动的多 Agent 编排框架，专为个人开发者设计。**
 
-> Docs: [requirements/v1.md](docs/requirements/v1.md)
+---
+
+## What is OpenNexum? / 什么是 OpenNexum？
+
+OpenNexum is an [OpenClaw](https://docs.openclaw.ai) skill that orchestrates multiple AI coding agents (Claude Code, Codex, Google CLI) in parallel — with verifiable quality standards baked in from the start.
+
+OpenNexum 是一个运行在 [OpenClaw](https://docs.openclaw.ai) 上的 skill，用于并行协调多个 AI 编程 Agent（Claude Code、Codex、Google CLI），并在任务启动前就确立可验证的完成标准。
+
+**Core idea / 核心理念：** Define a *Contract* before any code is written. An independent *Evaluator* agent verifies the work against the contract — not the agent that wrote it.
+
+在写任何代码之前，先定义一份*合约*（Contract）。由独立的*评估 Agent*（Evaluator）对照合约验收——而不是由执行任务的 Agent 自我评判。
+
+---
+
+## Key Features / 核心特性
+
+| Feature | Description |
+|---------|-------------|
+| 🔒 **Contract-first** | Every task has a YAML contract defining scope, deliverables, and verifiable criteria before execution |
+| 🧪 **Independent Evaluation** | Evaluator agent is strictly separate from the generator — GAN-inspired quality loop |
+| 🔄 **Feedback Loop** | Automatic retry with evaluator feedback until criteria pass or `max_iterations` is reached |
+| 🧠 **Knowledge Accumulation** | Lessons from each task are written to `docs/lessons/` and flow back into future prompts |
+| ⚡ **Parallel Safe** | Multiple tasks run concurrently when file scopes don't overlap |
+| 🔁 **Event-Driven** | git post-commit hook → `on-complete.sh` → evaluator dispatch → orchestrator wake-up |
+| 🛡️ **Crash Recovery** | `base_commit` + `events.jsonl` enable reconcile on restart |
+| 🔧 **Configurable** | Every agent model and CLI is overridable per-project via `nexum/config.json` |
+
+---
+
+## Who is it for? / 适合谁？
+
+- Solo developers who want to ship faster with AI agents  
+- Projects under 200k lines of code  
+- Single-machine setup (Mac/Linux + tmux)  
+- OpenClaw users who dispatch Claude Code and Codex together  
+
+---
+
+## Quick Start / 快速开始
+
+### Prerequisites / 前置条件
+
+- [OpenClaw](https://docs.openclaw.ai) installed
+- `tmux`, `git`, `python3` available
+- `codex` and/or `claude` CLI configured
+
+### 1. Install the skill / 安装 skill
+
+```bash
+# Via ClawHub
+openclaw skill install opennexum
+
+# Or clone manually
+git clone https://github.com/ayaoplus/OpenNexum.git \
+  ~/.openclaw/workspace/skills/opennexum
+```
+
+### 2. Initialize a project / 初始化项目
+
+```bash
+cd /path/to/your/project
+NEXUM_PROJECT_DIR=$(pwd) \
+  ~/.openclaw/workspace/skills/opennexum/scripts/nexum-init.sh \
+  --project myapp \
+  --tech "Next.js + PostgreSQL" \
+  --type coding
+```
+
+This generates / 这会生成：
+- `AGENTS.md` + `CLAUDE.md` (agent context maps)
+- `nexum/active-tasks.json` (task state)
+- `nexum/config.json` (project config)
+- `nexum/events.jsonl` (event log)
+- Git post-commit hook
+- tmux sessions: `nexum-plan`, `nexum-codex-1`, `nexum-codex-frontend`, `nexum-cc-frontend`, `nexum-eval`
+
+### 3. Write a Contract / 编写合约
+
+```yaml
+# docs/nexum/contracts/TASK-001.yaml
+id: TASK-001
+name: "Add user login page"
+type: coding
+created_at: "2026-03-27T09:00:00Z"
+
+scope:
+  files:
+    - src/pages/login.tsx
+    - src/api/auth.ts
+  boundaries:
+    - "Do not modify src/components/ui/"
+  conflicts_with: []
+
+deliverables:
+  - "Login form with email + password"
+  - "Calls POST /api/auth/login"
+  - "Shows error on wrong credentials"
+  - "Redirects to /dashboard on success"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "Login form renders with email and password fields"
+      method: "review: check JSX structure"
+      threshold: pass
+    - id: C2
+      desc: "API call made to /api/auth/login on submit"
+      method: "review: check fetch/axios call"
+      threshold: pass
+
+generator: codex-frontend
+evaluator: eval
+max_iterations: 3
+depends_on: []
+```
+
+### 4. Register and dispatch / 注册并派发
+
+```bash
+SKILL_DIR=~/.openclaw/workspace/skills/opennexum
+PROJECT_DIR=/path/to/your/project
+
+# Register task in active-tasks.json
+# (Add task entry manually or use orchestrator to register)
+
+# Dispatch generator
+NEXUM_PROJECT_DIR=$PROJECT_DIR \
+  $SKILL_DIR/scripts/dispatch.sh \
+  codex-frontend TASK-001 \
+  --role generator \
+  codex exec -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox
+```
+
+The rest is automatic / 后续全自动：
+1. Generator commits → post-commit hook fires  
+2. `on-complete.sh` validates scope → dispatches evaluator  
+3. Evaluator writes result → `on-complete.sh` reads verdict  
+4. Pass → task done; Fail → feedback loop → retry  
+5. Escalate to human after `max_iterations`  
+
+---
+
+## Project Structure / 项目结构
+
+After `nexum init`, your project will have / 初始化后项目结构：
+
+```
+your-project/
+├── AGENTS.md                    # Agent context map (~100 lines, source of truth)
+├── CLAUDE.md                    # Auto-synced from AGENTS.md (do not edit directly)
+├── ARCHITECTURE.md              # Generated by plan agent on first run
+├── docs/
+│   ├── design/                  # Technical design documents
+│   ├── lessons/                 # Task learnings (auto-written by agents)
+│   │   └── TEMPLATE.md
+│   └── nexum/
+│       └── contracts/           # Task Contract YAMLs (immutable after creation)
+└── nexum/
+    ├── active-tasks.json        # Single source of runtime truth
+    ├── config.json              # Project-level config overrides
+    ├── events.jsonl             # Append-only event log (for crash recovery)
+    ├── runtime/
+    │   ├── eval/                # Evaluator results per iteration
+    │   └── screenshots/         # E2E screenshots (.gitignore'd)
+    └── history/                 # Archived batches
+```
+
+---
+
+## Task Contract Schema / 合约字段说明
+
+See [`references/contract-schema.md`](references/contract-schema.md) for the full field specification.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | ✅ | Format: `^[A-Z]+-[0-9]+$` (e.g. `TASK-001`, `FIX-007`) |
+| `name` | ✅ | Human-readable task name |
+| `type` | ✅ | `coding` \| `task` \| `creative` |
+| `scope.files` | ✅ | Files the generator may modify |
+| `scope.boundaries` | — | Files/dirs the generator must NOT touch |
+| `scope.conflicts_with` | — | Task IDs that must not run in parallel |
+| `deliverables` | ✅ | List of verifiable outcomes |
+| `eval_strategy.type` | ✅ | `unit` \| `integration` \| `e2e` \| `review` \| `composite` |
+| `eval_strategy.local_url` | e2e only | App URL for Playwright testing |
+| `eval_strategy.criteria` | ✅ | Criteria list with `id`, `desc`, `method`, `threshold` |
+| `generator` | ✅ | Agent name (e.g. `codex-1`, `cc-frontend`) |
+| `evaluator` | ✅ | Agent name (default: `eval`) |
+| `max_iterations` | — | Retry limit (default: `1`) |
+| `depends_on` | — | Task IDs that must complete first |
+
+---
+
+## Scripts Reference / 脚本参考
+
+| Script | Usage | Purpose |
+|--------|-------|---------|
+| `nexum-init.sh` | `--project <n> [--tech "<s>"] [--type coding\|mixed]` | Initialize project |
+| `dispatch.sh` | `<agent> <task_id> --role generator\|evaluator [--prompt-file <p>] <cli...>` | Dispatch agent |
+| `on-complete.sh` | `<task_id> <exit_code> --role generator\|evaluator` | Completion callback |
+| `dispatch-evaluator.sh` | `<task_id>` | Build eval prompt + dispatch evaluator |
+| `update-task-status.sh` | `<task_id> <status> [key=value ...]` | Atomic state update |
+| `swarm-config.sh` | `get\|set\|show\|resolve <dot.path> [<value>]` | Config read/write |
+| `yaml-to-json.sh` | `<yaml_file>` | Parse YAML → JSON (shared utility) |
+| `install-hooks.sh` | `<project_path>` | Install git post-commit hook |
+| `health-check.sh` | `[--project <p>] [--threshold <min>]` | Detect stuck/dead agents |
+| `nexum-revert.sh` | `<task_id>` | Roll back failed task commits |
+
+---
+
+## Agent Defaults / Agent 默认配置
+
+All models are configurable via `nexum/config.json`. / 所有模型均可通过 `nexum/config.json` 覆盖。
+
+| Agent | Default CLI | Default Model | Best for |
+|-------|-------------|---------------|----------|
+| `plan` | claude | claude-opus-4-6 | Planning, contract review |
+| `codex-1` | codex | gpt-5.4 (high) | Backend, algorithms, scripts |
+| `codex-frontend` | codex | gpt-5.4 (medium) | Internal admin UI |
+| `cc-frontend` | claude | claude-sonnet-4-6 | External user-facing UI |
+| `cc-writer` | claude | claude-sonnet-4-6 | Writing, docs (Phase 4) |
+| `eval` | codex | gpt-5.4 (high) | Objective evaluation |
+| `gardener` | claude | claude-sonnet-4-6 | Knowledge maintenance (Phase 3) |
+
+Override example / 覆盖示例：
+
+```json
+// nexum/config.json
+{
+  "agents": {
+    "eval": { "cli": "claude", "model": "claude-sonnet-4-6" }
+  },
+  "notify": {
+    "target": "your-telegram-chat-id"
+  }
+}
+```
+
+---
+
+## Task Lifecycle / 任务生命周期
+
+```
+pending → running → evaluating → done
+                         │
+                    eval fail (iteration < max)
+                         │
+                      running (retry with feedback)
+                         │
+                    eval fail (iteration >= max)
+                         │
+                      escalated → notify human
+
+blocked → pending (when all depends_on are done)
+any state → cancelled (human-triggered via nexum-revert.sh)
+```
+
+---
+
+## Roadmap / 路线图
+
+- [x] **Phase 1** — Contract-based dispatch, generator/evaluator loop, event log, crash recovery
+- [ ] **Phase 2** — Playwright e2e eval, unit/integration test eval, composite strategy
+- [ ] **Phase 3** — Lesson harvest pipeline, gardener agent, knowledge accumulation
+- [ ] **Phase 4** — Writing/creative task support, `cc-writer` agent
+- [ ] **Phase 5** — Linter/CI architecture enforcement, semantic dedup, performance
+
+---
+
+## Design Documents / 设计文档
+
+- [Requirements v1.1](docs/requirements/v1.md) — What the system does and why
+- [Design v1.1](docs/design/v1.md) — How every component works
+
+---
+
+## License
+
+MIT
