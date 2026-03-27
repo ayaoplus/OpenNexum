@@ -1116,11 +1116,14 @@ case "$VERDICT" in
     if [ -z "$COMMIT_HASH" ]; then
       COMMIT_HASH="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
     fi
-    NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
-      "$TASK_ID" \
-      done \
-      "completed_at=${completed_at}" \
-      "last_error=null"
+    update_status_output="$(
+      NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
+        "$TASK_ID" \
+        done \
+        --output-batch-done \
+        "completed_at=${completed_at}" \
+        "last_error=null"
+    )"
     EVENT_ROLE="evaluator" \
       EVENT_ITERATION="$ITERATION" \
       EVENT_COMPLETED_AT="$completed_at" \
@@ -1130,8 +1133,8 @@ case "$VERDICT" in
     duration="$(format_duration "$STARTED_AT" "$completed_at")"
     send_notification "✅ ${TASK_ID} done (iter ${ITERATION}, elapsed ${duration})"
 
-    batch_json="$(all_tasks_done_json)"
-    if [ "$(json_value "$batch_json" "all_done" || true)" = "true" ]; then
+    if printf '%s\n' "$update_status_output" | grep -qx 'BATCH_DONE=true'; then
+      batch_json="$(all_tasks_done_json)"
       batch_id="$(json_value "$batch_json" "batch_id" || true)"
       done_count="$(json_value "$batch_json" "done_count" || true)"
       total_count="$(json_value "$batch_json" "total_count" || true)"
@@ -1185,6 +1188,7 @@ case "$VERDICT" in
 ┗ system_errors: $(json_value "$EVAL_JSON" "system_errors" || printf '[]')"
       fi
       send_notification "🔁 ${TASK_ID} iter ${ITERATION} failed → retry iter ${next_iteration}${retry_hint}"
+      send_system_event "generator_retry: ${TASK_ID} iter ${next_iteration}"
       exit 0
     fi
 

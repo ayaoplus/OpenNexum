@@ -6,7 +6,7 @@ PROJECT_DIR="${NEXUM_PROJECT_DIR:-$(pwd -P)}"
 TASK_FILE="${PROJECT_DIR}/nexum/active-tasks.json"
 
 usage() {
-  echo "Usage: update-task-status.sh <task_id> <status> [key=value ...]" >&2
+  echo "Usage: update-task-status.sh <task_id> <status> [--output-batch-done] [key=value ...]" >&2
   exit 1
 }
 
@@ -16,11 +16,21 @@ TASK_ID="$1"
 STATUS="$2"
 shift 2
 
+OUTPUT_BATCH_DONE=0
+FIELD_ARGS=()
+for arg in "$@"; do
+  if [ "$arg" = "--output-batch-done" ]; then
+    OUTPUT_BATCH_DONE=1
+    continue
+  fi
+  FIELD_ARGS+=("$arg")
+done
+
 LOCK_FILE="${TASK_FILE}.lock"
 mkdir -p "$(dirname "$TASK_FILE")"
 
 run_update() {
-  TASK_FILE="$TASK_FILE" LOCK_FILE="${LOCK_FILE:-}" python3 - "$TASK_ID" "$STATUS" "$@" <<'PY'
+  TASK_FILE="$TASK_FILE" LOCK_FILE="${LOCK_FILE:-}" OUTPUT_BATCH_DONE="$OUTPUT_BATCH_DONE" python3 - "$TASK_ID" "$STATUS" "$@" <<'PY'
 import json
 import os
 import sys
@@ -31,6 +41,7 @@ from json import JSONDecodeError
 
 TASK_FILE = os.environ["TASK_FILE"]
 LOCK_FILE = os.environ.get("LOCK_FILE")
+OUTPUT_BATCH_DONE = os.environ.get("OUTPUT_BATCH_DONE") == "1"
 TASK_ID = sys.argv[1]
 STATUS = sys.argv[2]
 RAW_FIELDS = sys.argv[3:]
@@ -165,22 +176,29 @@ def update_task_file():
                 task["updated_at"] = now
 
     write_data(data)
+    return all(
+        isinstance(task, dict) and task.get("status") == "done"
+        for task in tasks
+    ) if STATUS == "done" and tasks else False
 
 
 if LOCK_FILE:
     with open(LOCK_FILE, "a+", encoding="utf-8") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        update_task_file()
+        batch_done = update_task_file()
 else:
-    update_task_file()
+    batch_done = update_task_file()
+
+if OUTPUT_BATCH_DONE and batch_done:
+    print("BATCH_DONE=true")
 PY
 }
 
 if command -v flock >/dev/null 2>&1; then
   (
     flock -x 200
-    LOCK_FILE="" run_update "$@"
+    LOCK_FILE="" run_update "${FIELD_ARGS[@]}"
   ) 200>"$LOCK_FILE"
 else
-  LOCK_FILE="$LOCK_FILE" run_update "$@"
+  LOCK_FILE="$LOCK_FILE" run_update "${FIELD_ARGS[@]}"
 fi
