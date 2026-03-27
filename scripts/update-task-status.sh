@@ -132,6 +132,18 @@ def update_task_file():
     if target is None:
         raise SystemExit(2)
 
+    if STATUS == "running":
+        new_tmux_session = fields.get("tmux_session")
+        if new_tmux_session:
+            for other in tasks:
+                if not isinstance(other, dict) or other.get("id") == TASK_ID:
+                    continue
+                if other.get("status") == "running" and other.get("tmux_session") == new_tmux_session:
+                    fail(
+                        f"Conflict: task {other.get('id', '<unknown>')} already running on {new_tmux_session}",
+                        code=2,
+                    )
+
     target["status"] = STATUS
     target["updated_at"] = now
     for key, value in fields.items():

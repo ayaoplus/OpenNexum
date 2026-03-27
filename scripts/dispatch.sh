@@ -710,7 +710,7 @@ queue_tmux_runner() {
   tmux send-keys -t "$session" C-m
   tmux send-keys -t "$session" -l -- '  fi'
   tmux send-keys -t "$session" C-m
-  tmux send-keys -t "$session" -l -- '  if git diff HEAD~1 --name-only 2>/dev/null | grep -q "^AGENTS.md$"; then'
+  tmux send-keys -t "$session" -l -- '  if git diff "$BASE_COMMIT"..HEAD --name-only 2>/dev/null | grep -q "^AGENTS.md$"; then'
   tmux send-keys -t "$session" C-m
   tmux send-keys -t "$session" -l -- '    cp AGENTS.md CLAUDE.md'
   tmux send-keys -t "$session" C-m
@@ -852,12 +852,33 @@ ITERATION="$(read_iteration "$TASK_ID")"
 EVAL_RESULT_PATH=""
 
 if [ "$ROLE" = "generator" ]; then
+  set +e
   NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
     "$TASK_ID" \
     running \
     "base_commit=${BASE_COMMIT}" \
     "tmux_session=${TMUX_SESSION}" \
     "started_at=${NOW}"
+  UPDATE_STATUS_RESULT=$?
+  set -e
+  case "$UPDATE_STATUS_RESULT" in
+    0)
+      ;;
+    2)
+      BUSY_TASK_ID=""
+      set +e
+      BUSY_TASK_ID="$(check_generator_busy "$TMUX_SESSION")"
+      BUSY_CHECK_STATUS=$?
+      set -e
+      if [ "$BUSY_CHECK_STATUS" -eq 0 ] && [ -n "$BUSY_TASK_ID" ]; then
+        fail "Agent '$AGENT' is busy in tmux session '$TMUX_SESSION' with running task '$BUSY_TASK_ID'"
+      fi
+      fail "Agent '$AGENT' is busy in tmux session '$TMUX_SESSION'"
+      ;;
+    *)
+      fail "Failed to update task '$TASK_ID' to running"
+      ;;
+  esac
   append_event "{\"event\":\"task_started\",\"task_id\":\"${TASK_ID}\",\"base_commit\":\"${BASE_COMMIT}\",\"ts\":\"${NOW}\"}"
 else
   EVAL_RESULT_PATH="${PROJECT_DIR}/nexum/runtime/eval/${TASK_ID}-iter-${ITERATION}.yaml"
