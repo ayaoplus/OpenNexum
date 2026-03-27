@@ -243,6 +243,7 @@ if eval_type == "e2e":
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
     rendered = rendered.replace("{{LOCAL_URL}}", local_url)
+    rendered = rendered.replace("{{TASK_ID}}", task_id)
 elif eval_type == "integration":
     integration_template_path = os.path.join(skill_root, "references", "prompt-evaluator-integration.md")
     if not os.path.isfile(integration_template_path):

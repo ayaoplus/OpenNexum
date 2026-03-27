@@ -31,7 +31,7 @@
 2. 对每一条 criterion：
    - 严格按 `method` 字段描述执行 Playwright 操作。
    - 记录实际观察到的行为、网络请求、DOM 状态或 URL 变化。
-   - 保存截图到 `nexum/runtime/screenshots/TASK-ID-<criterion-id>.png`。
+   - 保存截图到 `nexum/runtime/screenshots/{{TASK_ID}}-<criterion-id>.png`。
 3. 将最终 YAML 结果写入 `{{EVAL_RESULT_PATH}}`。
 
 ## Output Format
@@ -52,7 +52,7 @@ strategy_results:
 feedback: |
   仅在 fail 时填写，面向 generator 给出可执行修复意见。
 artifacts:
-  - "nexum/runtime/screenshots/TASK-ID-C1.png"
+  - "nexum/runtime/screenshots/{{TASK_ID}}-C1.png"
 ```
 
 现在开始评估：使用 Playwright 对 `{{LOCAL_URL}}` 执行端到端验证，逐条完成 criteria，并把最终 YAML 写入 `{{EVAL_RESULT_PATH}}`。
