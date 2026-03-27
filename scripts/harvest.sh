@@ -63,6 +63,7 @@ summary_json="$(
   HARVESTED_AT="$(timestamp_utc)" \
   python3 - <<'PY'
 import json
+import math
 import os
 import re
 import subprocess
@@ -229,7 +230,6 @@ def _compute_tf(tokens):
 
 def _build_idf(corpus_tokens_list):
     """Inverse document frequency across the corpus"""
-    import math
 
     n = len(corpus_tokens_list)
     if n == 0:
@@ -247,8 +247,6 @@ def _tfidf_vector(tokens, idf):
 
 
 def _cosine(vec_a, vec_b):
-    import math
-
     if not vec_a or not vec_b:
         return 0.0
     dot = sum(vec_a.get(term, 0.0) * vec_b.get(term, 0.0) for term in vec_a)
@@ -399,7 +397,7 @@ def compare_lesson(candidate, accepted):
             continue
         if similarity(candidate["right"], existing["right"]) > 0.65:
             return "DUPLICATE", existing
-        if similarity(candidate["trigger"], existing["trigger"]) >= 0.8 and contradiction(candidate["right"], existing["right"]):
+        if similarity(candidate["trigger"], existing["trigger"]) >= 0.55 and contradiction(candidate["right"], existing["right"]):
             return "CONTRADICTION", existing
     return None, None
 
