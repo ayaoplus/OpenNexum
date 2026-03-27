@@ -67,13 +67,24 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 REFERENCES_DIR="${ROOT_DIR}/references"
 
 [ -d "$BASE_DIR" ] || fail "base directory does not exist: $BASE_DIR"
+BASE_DIR="$(cd "$BASE_DIR" && pwd -P)"
 [ -f "${REFERENCES_DIR}/agents-md-template.md" ] || fail "missing template: ${REFERENCES_DIR}/agents-md-template.md"
 [ -f "${REFERENCES_DIR}/defaults.json" ] || fail "missing defaults: ${REFERENCES_DIR}/defaults.json"
 [ -f "${REFERENCES_DIR}/lesson-template.md" ] || fail "missing lesson template: ${REFERENCES_DIR}/lesson-template.md"
 
-PROJECT_DIR="${BASE_DIR}/${PROJECT_NAME}"
+if [ "$(basename "$BASE_DIR")" = "$PROJECT_NAME" ]; then
+  PROJECT_DIR="$BASE_DIR"
+else
+  PROJECT_DIR="${BASE_DIR}/${PROJECT_NAME}"
+fi
 CURRENT_DATE="$(date -u +%Y-%m-%d)"
 TIMESTAMP_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Idempotency check — skip if already initialized
+if [ -f "${PROJECT_DIR}/nexum/active-tasks.json" ]; then
+  echo "nexum already initialized in ${PROJECT_DIR} — skipping" >&2
+  exit 0
+fi
 
 mkdir -p \
   "${PROJECT_DIR}/docs/design" \

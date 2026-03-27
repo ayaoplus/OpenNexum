@@ -5,7 +5,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 PROJECT_DIR="${NEXUM_PROJECT_DIR:-$(pwd -P)}"
+[ -d "$PROJECT_DIR" ] || {
+  echo "Error: project directory does not exist: $PROJECT_DIR" >&2
+  exit 1
+}
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
+# Auto-initialize if nexum hasn't been set up yet
+ACTIVE_TASKS_FILE="${PROJECT_DIR}/nexum/active-tasks.json"
+if [ ! -f "$ACTIVE_TASKS_FILE" ]; then
+  echo "⚡ nexum not initialized in ${PROJECT_DIR} — running nexum-init.sh..." >&2
+  NEXUM_INIT_SCRIPT="${SCRIPT_DIR}/nexum-init.sh"
+  if [ ! -x "$NEXUM_INIT_SCRIPT" ]; then
+    echo "Error: nexum-init.sh not found or not executable: $NEXUM_INIT_SCRIPT" >&2
+    exit 1
+  fi
+  PROJECT_NAME="$(basename "$PROJECT_DIR")"
+  NEXUM_PROJECT_DIR="$PROJECT_DIR" "$NEXUM_INIT_SCRIPT" \
+    --project "$PROJECT_NAME" \
+    --type coding \
+    2>&1 | sed 's/^/  [nexum-init] /' >&2
+  echo "✅ nexum initialized for ${PROJECT_NAME}" >&2
+fi
 ACTIVE_TASKS_FILE="${PROJECT_DIR}/nexum/active-tasks.json"
 DISPATCH_SCRIPT="${SCRIPT_DIR}/dispatch.sh"
 SWARM_CONFIG_SCRIPT="${SCRIPT_DIR}/swarm-config.sh"
