@@ -167,7 +167,7 @@ PY
 if command -v flock >/dev/null 2>&1; then
   (
     flock -x 200
-    run_update "$@"
+    LOCK_FILE="" run_update "$@"
   ) 200>"$LOCK_FILE"
 else
   LOCK_FILE="$LOCK_FILE" run_update "$@"
