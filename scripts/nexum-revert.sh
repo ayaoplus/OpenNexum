@@ -168,5 +168,5 @@ if [ -n "$notify_target" ] && [ "$notify_target" != "null" ] && command -v openc
     >/dev/null 2>&1 || true
 fi
 
-"$SCRIPT_DIR/update-task-status.sh" "$TASK_ID" cancelled --field
+"$SCRIPT_DIR/update-task-status.sh" "$TASK_ID" cancelled
 echo "✅ ${TASK_ID} reverted successfully. Status → cancelled."
