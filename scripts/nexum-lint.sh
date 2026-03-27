@@ -167,6 +167,22 @@ def validate_contract(contract_path):
             ("CONTRACT_TYPE_INVALID", "type must be one of: coding, task, creative")
         )
 
+    contract_name = contract.get("name")
+    if not is_nonempty_text(contract_name):
+        issues.append(("NAME_MISSING", "name must be a nonempty string"))
+
+    created_at = contract.get("created_at")
+    if not is_nonempty_text(created_at):
+        issues.append(("CREATED_AT_MISSING", "created_at must be an ISO 8601 UTC timestamp"))
+
+    max_iterations = contract.get("max_iterations")
+    if not isinstance(max_iterations, int) or max_iterations <= 0:
+        issues.append(("MAX_ITERATIONS_INVALID", "max_iterations must be a positive integer"))
+
+    depends_on = contract.get("depends_on")
+    if not isinstance(depends_on, list):
+        issues.append(("DEPENDS_ON_MISSING", "depends_on must be a list (use [] if no dependencies)"))
+
     scope = contract.get("scope")
     scope_files = scope.get("files") if isinstance(scope, dict) else None
     if not has_nonempty_items(scope_files):
@@ -176,6 +192,14 @@ def validate_contract(contract_path):
                 "scope.files must list at least one file the generator may modify",
             )
         )
+
+    scope_boundaries = scope.get("boundaries") if isinstance(scope, dict) else None
+    if not isinstance(scope_boundaries, list):
+        issues.append(("SCOPE_BOUNDARIES_MISSING", "scope.boundaries must be a list (use [] if unrestricted)"))
+
+    scope_conflicts = scope.get("conflicts_with") if isinstance(scope, dict) else None
+    if not isinstance(scope_conflicts, list):
+        issues.append(("SCOPE_CONFLICTS_MISSING", "scope.conflicts_with must be a list (use [] if no conflicts)"))
 
     deliverables = contract.get("deliverables")
     if not has_nonempty_items(deliverables):
@@ -230,6 +254,24 @@ def validate_contract(contract_path):
                         f"criterion at index {index} is missing required field: {'/'.join(missing)}",
                     )
                 )
+            if isinstance(criterion, dict):
+                threshold = criterion.get("threshold")
+                if threshold not in {"pass", "score"}:
+                    issues.append(
+                        (
+                            "CRITERION_INCOMPLETE",
+                            f"criterion at index {index}: threshold must be 'pass' or 'score'",
+                        )
+                    )
+                elif threshold == "score":
+                    min_score = criterion.get("min_score")
+                    if not isinstance(min_score, (int, float)):
+                        issues.append(
+                            (
+                                "CRITERION_INCOMPLETE",
+                                f"criterion at index {index}: min_score must be a number when threshold=score",
+                            )
+                        )
 
     if eval_type == "composite":
         sub_strategies = (
