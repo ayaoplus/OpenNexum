@@ -17,13 +17,6 @@ EOF
   exit 1
 }
 
-require_flock() {
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "flock command not found" >&2
-    exit 1
-  fi
-}
-
 python_read() {
   python3 - "$@" <<'PY'
 import json
@@ -146,11 +139,13 @@ import json
 import os
 import sys
 import tempfile
+import fcntl
 from json import JSONDecodeError
 
 CONFIG_FILE = os.environ["CONFIG_FILE"]
 DOT_PATH = sys.argv[1]
 RAW_VALUE = sys.argv[2]
+LOCK_FILE = os.environ.get("LOCK_FILE")
 
 
 def parse_value(raw):
@@ -160,46 +155,61 @@ def parse_value(raw):
         return raw
 
 
-if os.path.exists(CONFIG_FILE):
+def load_project():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
+                project = json.load(handle)
+        except JSONDecodeError as exc:
+            print(f"Invalid JSON in {CONFIG_FILE}: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        if not isinstance(project, dict):
+            print(f"Top-level JSON value in {CONFIG_FILE} must be an object", file=sys.stderr)
+            raise SystemExit(1)
+        return project
+    return {}
+
+
+def write_project(project):
+    directory = os.path.dirname(CONFIG_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".config.", suffix=".tmp", dir=directory)
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
-            project = json.load(handle)
-    except JSONDecodeError as exc:
-        print(f"Invalid JSON in {CONFIG_FILE}: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-    if not isinstance(project, dict):
-        print(f"Top-level JSON value in {CONFIG_FILE} must be an object", file=sys.stderr)
-        raise SystemExit(1)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(project, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, CONFIG_FILE)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def update_config():
+    project = load_project()
+    segments = DOT_PATH.split(".")
+    cursor = project
+    for segment in segments[:-1]:
+        existing = cursor.get(segment)
+        if existing is None:
+            cursor[segment] = {}
+            existing = cursor[segment]
+        if not isinstance(existing, dict):
+            print(f"Cannot set nested path through non-object at '{segment}'", file=sys.stderr)
+            raise SystemExit(1)
+        cursor = existing
+
+    cursor[segments[-1]] = parse_value(RAW_VALUE)
+    write_project(project)
+
+
+if LOCK_FILE:
+    with open(LOCK_FILE, "a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        update_config()
 else:
-    project = {}
-
-segments = DOT_PATH.split(".")
-cursor = project
-for segment in segments[:-1]:
-    existing = cursor.get(segment)
-    if existing is None:
-        cursor[segment] = {}
-        existing = cursor[segment]
-    if not isinstance(existing, dict):
-        print(f"Cannot set nested path through non-object at '{segment}'", file=sys.stderr)
-        raise SystemExit(1)
-    cursor = existing
-
-cursor[segments[-1]] = parse_value(RAW_VALUE)
-
-directory = os.path.dirname(CONFIG_FILE)
-os.makedirs(directory, exist_ok=True)
-fd, tmp_path = tempfile.mkstemp(prefix=".config.", suffix=".tmp", dir=directory)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(project, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, CONFIG_FILE)
-finally:
-    if os.path.exists(tmp_path):
-        os.unlink(tmp_path)
+    update_config()
 PY
 }
 
@@ -217,13 +227,16 @@ case "$COMMAND" in
     ;;
   set)
     [ "$#" -eq 2 ] || usage
-    require_flock
     mkdir -p "$(dirname "$CONFIG_FILE")"
     LOCK_FILE="${CONFIG_FILE}.lock"
-    (
-      flock -x 200
-      CONFIG_FILE="$CONFIG_FILE" python_set "$1" "$2"
-    ) 200>"$LOCK_FILE"
+    if command -v flock >/dev/null 2>&1; then
+      (
+        flock -x 200
+        CONFIG_FILE="$CONFIG_FILE" python_set "$1" "$2"
+      ) 200>"$LOCK_FILE"
+    else
+      LOCK_FILE="$LOCK_FILE" CONFIG_FILE="$CONFIG_FILE" python_set "$1" "$2"
+    fi
     ;;
   show)
     [ "$#" -eq 0 ] || usage
