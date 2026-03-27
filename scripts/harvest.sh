@@ -734,6 +734,22 @@ print(summary.get("message", ""))
 PY
 )"
 
+agents_updated="$(
+  SUMMARY_JSON="$summary_json" python3 - <<'PY'
+import json
+import os
+
+summary = json.loads(os.environ["SUMMARY_JSON"])
+print("true" if summary.get("agents_updated") else "false")
+PY
+)"
+
+if [ "$agents_updated" = "true" ]; then
+  git -C "$PROJECT_DIR" add -- AGENTS.md
+  git -C "$PROJECT_DIR" commit -m "chore(nexum): harvest — update AGENTS.md lessons interval" \
+    --no-verify 2>&1 || true
+fi
+
 if [ -n "$message" ]; then
   send_notification "$message"
 fi
