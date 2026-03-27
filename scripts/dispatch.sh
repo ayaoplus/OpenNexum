@@ -610,6 +610,7 @@ CONTRACT_JSON_FILE="$(mktemp "/tmp/nexum-contract-${TASK_ID}.XXXXXX")"
 write_contract_cache "$CONTRACT_FILE" > "$CONTRACT_JSON_FILE"
 
 CONTRACT_NAME="$(json_get "name" || true)"
+CONTRACT_TYPE="$(json_get "type" || true)"
 CONTRACT_GENERATOR="$(json_get "generator" || true)"
 CONTRACT_EVALUATOR="$(json_get "evaluator" || true)"
 
@@ -751,7 +752,18 @@ if [ -n "$PROMPT_FILE" ]; then
 else
   case "$ROLE" in
     generator)
-      TEMPLATE_FILE="${REFERENCES_DIR}/prompt-generator-coding.md"
+      case "${CONTRACT_TYPE:-coding}" in
+        creative|task)
+          TEMPLATE_FILE="${REFERENCES_DIR}/prompt-generator-writing.md"
+          ;;
+        *)
+          TEMPLATE_FILE="${REFERENCES_DIR}/prompt-generator-coding.md"
+          ;;
+      esac
+      if [ ! -f "$TEMPLATE_FILE" ]; then
+        echo "Warning: template $TEMPLATE_FILE not found, falling back to coding template" >&2
+        TEMPLATE_FILE="${REFERENCES_DIR}/prompt-generator-coding.md"
+      fi
       ;;
     evaluator)
       TEMPLATE_FILE="${REFERENCES_DIR}/prompt-evaluator.md"
