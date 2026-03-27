@@ -239,11 +239,6 @@ def contradiction(left, right):
     if left_neg != right_neg and overlap_score >= 0.25:
         return True
 
-    left_bracket = 1 if "<" in left_text and ">" not in left_text else -1 if ">" in left_text and "<" not in left_text else 0
-    right_bracket = 1 if "<" in right_text and ">" not in right_text else -1 if ">" in right_text and "<" not in right_text else 0
-    if left_bracket and right_bracket and left_bracket == -right_bracket:
-        return True
-
     return False
 
 
@@ -525,9 +520,12 @@ def load_existing_process_notes():
         return existing_notes, existing_sources
 
     for path in sorted(process_lessons_dir.glob("*.md")):
+        if path.stem == "TEMPLATE":
+            continue
         try:
             record = parse_markdown_lesson(path)
-        except SystemExit:
+        except SystemExit as exc:
+            parse_errors.append({"path": str(path), "error": str(exc)})
             continue
         note_key = normalize_text(record.get("agent_note", "")).lower()
         source_project = normalize_text(record.get("source_project", ""))
@@ -540,6 +538,7 @@ def load_existing_process_notes():
     return existing_notes, existing_sources
 
 
+parse_errors = []
 state = load_state()
 last_harvest_at = state["last_harvest_at"]
 last_harvest_dt = parse_iso8601(last_harvest_at)
@@ -547,7 +546,10 @@ last_harvest_dt = parse_iso8601(last_harvest_at)
 lesson_files = discover_lesson_files()
 parsed_lessons = []
 for lesson_path in lesson_files:
-    parsed_lessons.append(parse_markdown_lesson(lesson_path))
+    try:
+        parsed_lessons.append(parse_markdown_lesson(lesson_path))
+    except SystemExit as exc:
+        parse_errors.append({"path": str(lesson_path), "error": str(exc)})
 
 new_sources = set()
 if last_harvest_dt is None:
@@ -710,6 +712,7 @@ summary = {
     "processed_count": len(new_sources),
     "technical_accepted_count": len(new_accepted_technical),
     "process_written_count": process_written,
+    "parse_errors": parse_errors,
     "duplicate_count": duplicate_count,
     "contradiction_count": contradiction_count,
     "conflict_count": issue_count,
