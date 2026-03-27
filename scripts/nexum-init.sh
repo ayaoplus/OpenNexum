@@ -230,7 +230,10 @@ else
   HOOK_INSTALLER="${SCRIPT_DIR}/install-hooks.sh"
 fi
 [ -f "$HOOK_INSTALLER" ] || fail "install-hooks.sh not found"
-[ -d "${PROJECT_DIR}/.git" ] || fail "project directory is not a git repository: ${PROJECT_DIR}"
+if [ ! -d "${PROJECT_DIR}/.git" ]; then
+  git init "$PROJECT_DIR" >/dev/null
+  echo "🔧 git init: ${PROJECT_DIR}"
+fi
 "$HOOK_INSTALLER" "$PROJECT_DIR" >/dev/null
 
 for session_name in \
