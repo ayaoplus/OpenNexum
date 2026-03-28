@@ -1064,9 +1064,12 @@ ${batch_task_summaries_display}
   fail|error|inconclusive)
     if [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; then
       next_iteration=$((ITERATION + 1))
+      # Reset to pending so dispatch.sh can set running + tmux_session atomically.
+      # Do NOT set running here — that would leave a stale tmux_session that
+      # triggers the busy-conflict guard in dispatch.sh / update-task-status.sh.
       NEXUM_PROJECT_DIR="$PROJECT_DIR" "$UPDATE_TASK_STATUS_SCRIPT" \
         "$TASK_ID" \
-        running \
+        pending \
         "iteration=${next_iteration}" \
         "last_error=null"
       EVENT_ROLE="evaluator" \
