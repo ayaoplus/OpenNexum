@@ -68,6 +68,12 @@ send_system_event() {
   openclaw system event --mode now --text "$text" >/dev/null 2>&1 || true
 }
 
+send_formatted_notification() {
+  local title="$1"
+  local body="$2"
+  send_notification "$(printf '%s\n%s\n%s' "$title" "━━━━━━━━━━━━━━━" "$body")"
+}
+
 append_event() {
   local event_name="$1"
 
@@ -275,13 +281,203 @@ print(" ".join(parts))
 PY
 }
 
-all_tasks_done_json() {
+format_bullet_list() {
+  local raw="$1"
+  BULLET_TEXT="$raw" python3 - <<'PY'
+import os
+
+lines = [line.strip() for line in os.environ["BULLET_TEXT"].splitlines() if line.strip()]
+if not lines:
+    print("- none")
+else:
+    print("\n".join(f"- {line}" for line in lines))
+PY
+}
+
+summarize_text() {
+  local text="$1"
+  local limit="${2:-200}"
+  TEXT_TO_SUMMARIZE="$text" TEXT_LIMIT="$limit" python3 - <<'PY'
+import os
+
+text = os.environ["TEXT_TO_SUMMARIZE"].replace("\n", " ").replace("\r", " ").strip()
+limit = int(os.environ["TEXT_LIMIT"])
+print(text[:limit])
+PY
+}
+
+get_progress_summary() {
   ACTIVE_TASKS_FILE="$ACTIVE_TASKS_FILE" python3 - <<'PY'
 import json
 import os
 from json import JSONDecodeError
 
 task_file = os.environ["ACTIVE_TASKS_FILE"]
+
+try:
+    with open(task_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (FileNotFoundError, JSONDecodeError):
+    print("0 done | 0 running | 0 blocked | 0 pending")
+    raise SystemExit(0)
+
+tasks = data.get("tasks")
+if not isinstance(tasks, list):
+    print("0 done | 0 running | 0 blocked | 0 pending")
+    raise SystemExit(0)
+
+counts = {
+    "done": 0,
+    "running": 0,
+    "blocked": 0,
+    "pending": 0,
+}
+
+for task in tasks:
+    if not isinstance(task, dict):
+        continue
+    status = task.get("status")
+    if status in counts:
+        counts[status] += 1
+
+print(
+    f"{counts['done']} done | "
+    f"{counts['running']} running | "
+    f"{counts['blocked']} blocked | "
+    f"{counts['pending']} pending"
+)
+PY
+}
+
+get_unlocked_tasks() {
+  local completed_task_id="$1"
+  ACTIVE_TASKS_FILE="$ACTIVE_TASKS_FILE" COMPLETED_TASK_ID="$completed_task_id" python3 - <<'PY'
+import json
+import os
+from json import JSONDecodeError
+
+task_file = os.environ["ACTIVE_TASKS_FILE"]
+completed_task_id = os.environ["COMPLETED_TASK_ID"]
+
+try:
+    with open(task_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (FileNotFoundError, JSONDecodeError):
+    raise SystemExit(0)
+
+tasks = data.get("tasks")
+if not isinstance(tasks, list):
+    raise SystemExit(0)
+
+for task in tasks:
+    if not isinstance(task, dict):
+        continue
+    depends_on = task.get("depends_on")
+    if not isinstance(depends_on, list) or completed_task_id not in depends_on:
+        continue
+    if task.get("status") != "pending":
+        continue
+    task_id = str(task.get("id") or "?")
+    name = str(task.get("name") or task_id)
+    print(f"{task_id} | {name}")
+PY
+}
+
+get_failed_criteria() {
+  local result_path="$1"
+  RESULT_PATH="$result_path" YAML_TO_JSON_SCRIPT="$SCRIPT_DIR/yaml-to-json.sh" python3 - <<'PY'
+import json
+import os
+import subprocess
+from json import JSONDecodeError
+
+result_path = os.environ["RESULT_PATH"]
+yaml_to_json_script = os.environ["YAML_TO_JSON_SCRIPT"]
+
+result = subprocess.run([yaml_to_json_script, result_path], capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(result.stdout)
+except JSONDecodeError:
+    raise SystemExit(0)
+
+strategy_results = payload.get("strategy_results")
+if not isinstance(strategy_results, list):
+    raise SystemExit(0)
+
+for strategy in strategy_results:
+    if not isinstance(strategy, dict):
+        continue
+    criteria_results = strategy.get("criteria_results")
+    if not isinstance(criteria_results, list):
+        continue
+    for criterion in criteria_results:
+        if not isinstance(criterion, dict):
+            continue
+        if criterion.get("result") != "fail":
+            continue
+        criterion_id = criterion.get("id")
+        if criterion_id not in (None, ""):
+            print(criterion_id)
+PY
+}
+
+all_tasks_done_json() {
+  ACTIVE_TASKS_FILE="$ACTIVE_TASKS_FILE" PROJECT_DIR="$PROJECT_DIR" python3 - <<'PY'
+import json
+import os
+from json import JSONDecodeError
+
+task_file = os.environ["ACTIVE_TASKS_FILE"]
+project_dir = os.environ["PROJECT_DIR"]
+
+
+def duration_parts(started_at, completed_at):
+    from datetime import datetime
+
+    if not isinstance(started_at, str) or not started_at.strip():
+        return None, "unknown"
+    if not isinstance(completed_at, str) or not completed_at.strip():
+        return None, "unknown"
+
+    try:
+        start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "unknown"
+
+    seconds = int((end_dt - start_dt).total_seconds())
+    if seconds < 0:
+        seconds = 0
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return seconds, " ".join(parts)
+
+
+def format_total_duration(total_seconds, known_duration_count):
+    if known_duration_count == 0:
+        return "unknown"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
 
 try:
     with open(task_file, "r", encoding="utf-8") as handle:
@@ -298,12 +494,34 @@ if not isinstance(tasks, list):
 done_count = sum(1 for task in tasks if isinstance(task, dict) and task.get("status") == "done")
 total_count = sum(1 for task in tasks if isinstance(task, dict))
 all_done = total_count > 0 and done_count == total_count
+task_summaries = []
+total_duration_seconds = 0
+known_duration_count = 0
+total_iterations = 0
+
+for task in tasks:
+    if not isinstance(task, dict):
+        continue
+    task_id = str(task.get("id") or "?")
+    task_name = str(task.get("name") or task_id)
+    task_status = str(task.get("status") or "unknown")
+    duration_seconds, duration_text = duration_parts(task.get("started_at"), task.get("completed_at"))
+    if duration_seconds is not None:
+        total_duration_seconds += duration_seconds
+        known_duration_count += 1
+    iteration = task.get("iteration")
+    total_iterations += max(iteration, 0) + 1 if isinstance(iteration, int) else 1
+    task_summaries.append(f"{task_id} | {task_name} | {task_status} | {duration_text}")
 
 print(json.dumps({
     "all_done": all_done,
     "batch_id": data.get("batch_id"),
+    "project": data.get("project") or os.path.basename(project_dir),
     "done_count": done_count,
     "total_count": total_count,
+    "task_summaries": task_summaries,
+    "total_estimated_duration": format_total_duration(total_duration_seconds, known_duration_count),
+    "total_iterations": total_iterations,
 }, ensure_ascii=False))
 PY
 }
@@ -646,7 +864,10 @@ if [ "$ROLE" = "generator" ]; then
       failed \
       "last_error=exit ${EXIT_CODE}"
     EVENT_ROLE="generator" EVENT_EXIT_CODE="$EXIT_CODE" EVENT_REASON="exit_${EXIT_CODE}" append_event "task_failed"
-    send_notification "❌ ${TASK_ID} generator failed (exit ${EXIT_CODE})"
+    send_formatted_notification "❌ Generator 执行失败" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+角色: generator
+退出码: ${EXIT_CODE}"
     exit 0
   fi
 
@@ -688,7 +909,10 @@ if [ "$ROLE" = "generator" ]; then
       EVENT_REASON="scope_violation" \
       EVENT_FILES_JSON="$violations_json" \
       append_event "task_failed"
-    send_notification "⚠️ ${TASK_ID} scope 违规，冻结。违规文件: ${VIOLATIONS[*]}. 执行 nexum-revert.sh ${TASK_ID} 可回滚"
+    send_formatted_notification "⚠️ Scope 违规，任务已冻结" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+违规文件: ${VIOLATIONS[*]}
+操作: 执行 nexum-revert.sh ${TASK_ID} 可回滚"
     exit 0
   fi
 
@@ -706,7 +930,9 @@ if [ "$ROLE" = "generator" ]; then
       failed \
       "last_error=dispatch_evaluator_missing"
     EVENT_ROLE="generator" EVENT_REASON="dispatch_evaluator_missing" append_event "task_failed"
-    send_notification "❌ ${TASK_ID} 无法启动 evaluator：缺少 dispatch-evaluator.sh"
+    send_formatted_notification "❌ Evaluator 派发失败" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+原因: 缺少 dispatch-evaluator.sh"
     exit 0
   fi
 
@@ -716,7 +942,9 @@ if [ "$ROLE" = "generator" ]; then
       failed \
       "last_error=dispatch_evaluator_failed"
     EVENT_ROLE="generator" EVENT_REASON="dispatch_evaluator_failed" append_event "task_failed"
-    send_notification "❌ ${TASK_ID} generator done but evaluator dispatch failed"
+    send_formatted_notification "❌ Evaluator 派发失败" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+状态: generator 已完成，但 evaluator 启动失败"
     send_system_event "eval_dispatch_failed: ${TASK_ID}"
     exit 0
   fi
@@ -725,7 +953,10 @@ if [ "$ROLE" = "generator" ]; then
     EVENT_ROLE="generator" EVENT_ITERATION="$ITERATION" EVENT_COMMIT_HASH="$head_commit" append_event "eval_started"
   fi
   send_system_event "eval_started: ${TASK_ID}"
-  send_notification "🔍 ${TASK_ID} generator done → eval starting (iter ${ITERATION})"
+  send_formatted_notification "🔍 开始评估" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+当前迭代: ${ITERATION}
+commit: ${head_commit}"
   exit 0
 fi
 
@@ -735,9 +966,10 @@ if [ ! -f "$EVAL_RESULT_PATH" ]; then
     failed \
     "last_error=eval_result_missing"
   EVENT_ROLE="evaluator" EVENT_REASON="eval_result_missing" EVENT_ITERATION="$ITERATION" EVENT_EXIT_CODE="$EXIT_CODE" append_event "task_failed"
-  send_notification "❌ ${TASK_ID} evaluator 未产出结果文件
-┣ 期望路径: ${EVAL_RESULT_PATH}
-┗ Evaluator exit: ${EXIT_CODE}"
+  send_formatted_notification "❌ Evaluator 结果缺失" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+期望路径: ${EVAL_RESULT_PATH}
+evaluator exit: ${EXIT_CODE}"
   send_system_event "eval_result_missing: ${TASK_ID}"
   exit 0
 fi
@@ -782,25 +1014,46 @@ case "$VERDICT" in
       append_event "task_done"
 
     duration="$(format_duration "$STARTED_AT" "$completed_at")"
-    send_notification "✅ ${TASK_ID} done (iter ${ITERATION}, elapsed ${duration})"
+    completed_iterations=$((ITERATION + 1))
+    unlocked_tasks_raw="$(get_unlocked_tasks "$TASK_ID" || true)"
+    unlocked_tasks_display="$(format_bullet_list "$unlocked_tasks_raw")"
+    progress_summary="$(get_progress_summary)"
+    send_formatted_notification "✅ 任务评估通过" "任务名: ${TASK_NAME}
+用时: ${duration}
+迭代次数: ${completed_iterations}
+criteria: ${PASS_COUNT}/${TOTAL_COUNT}
+已解锁下游任务:
+${unlocked_tasks_display}
+当前总进度: ${progress_summary}"
 
     if printf '%s\n' "$update_status_output" | grep -qx 'BATCH_DONE=true'; then
       batch_json="$(all_tasks_done_json)"
       batch_id="$(json_value "$batch_json" "batch_id" || true)"
+      project_name="$(json_value "$batch_json" "project" || true)"
       done_count="$(json_value "$batch_json" "done_count" || true)"
       total_count="$(json_value "$batch_json" "total_count" || true)"
-      send_notification "🎉 批次完成
-┣ Batch: ${batch_id:-unknown}
-┗ Done: ${done_count:-0}/${total_count:-0}"
+      total_estimated_duration="$(json_value "$batch_json" "total_estimated_duration" || true)"
+      total_iterations="$(json_value "$batch_json" "total_iterations" || true)"
+      batch_task_summaries_raw="$(json_array_lines "$batch_json" "task_summaries" || true)"
+      batch_task_summaries_display="$(format_bullet_list "$batch_task_summaries_raw")"
+      send_formatted_notification "🎉 BATCH_DONE" "项目名: ${project_name:-$(basename "$PROJECT_DIR")}
+Batch: ${batch_id:-unknown}
+任务完成状态:
+${batch_task_summaries_display}
+总用时估算: ${total_estimated_duration:-unknown}
+总迭代次数: ${total_iterations:-0}
+批次进度: ${done_count:-0}/${total_count:-0} done"
 
       # Check if harvest.auto_trigger is enabled
       harvest_auto="$(NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/swarm-config.sh" get harvest.auto_trigger 2>/dev/null || echo "true")"
       if [ "$harvest_auto" = "true" ] && [ -x "$SCRIPT_DIR/harvest.sh" ]; then
-        send_notification "🌾 开始 harvest（Phase 3 lesson 收割）..."
+        send_formatted_notification "🌾 开始 harvest" "任务: 批次已完成
+项目名: ${project_name:-$(basename "$PROJECT_DIR")}"
         if NEXUM_PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/harvest.sh" 2>&1; then
-          send_notification "✅ harvest 完成"
+          send_formatted_notification "✅ harvest 完成" "项目名: ${project_name:-$(basename "$PROJECT_DIR")}"
         else
-          send_notification "⚠️ harvest 失败（exit $?），请检查日志"
+          send_formatted_notification "⚠️ harvest 失败" "项目名: ${project_name:-$(basename "$PROJECT_DIR")}
+原因: 请检查 harvest 日志"
         fi
       fi
     fi
@@ -840,16 +1093,24 @@ case "$VERDICT" in
           failed \
           "last_error=generator_redispatch_failed"
         EVENT_ROLE="evaluator" EVENT_REASON="generator_redispatch_failed" EVENT_ITERATION="$ITERATION" append_event "task_failed"
-        send_notification "❌ ${TASK_ID} eval 后重派 generator 失败"
+        send_formatted_notification "❌ Generator 重派失败" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+当前迭代: ${ITERATION}
+目标 agent: ${GENERATOR_AGENT}"
         exit 0
       fi
 
-      retry_hint=""
-      if [ "$VERDICT" = "error" ] || [ "$VERDICT" = "inconclusive" ]; then
-        retry_hint="
-┗ system_errors: $(json_value "$EVAL_JSON" "system_errors" || printf '[]')"
-      fi
-      send_notification "🔁 ${TASK_ID} iter ${ITERATION} failed → retry iter ${next_iteration}${retry_hint}"
+      failed_criteria_raw="$(get_failed_criteria "$EVAL_RESULT_PATH" || true)"
+      failed_criteria_display="$(format_bullet_list "$failed_criteria_raw")"
+      feedback_source="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}"
+      feedback_excerpt="$(summarize_text "$feedback_source" 200)"
+      send_formatted_notification "🔁 任务待重试" "任务名: ${TASK_NAME}
+当前迭代: ${ITERATION}
+下一迭代: ${next_iteration}
+criteria: ${PASS_COUNT}/${TOTAL_COUNT}
+失败 criteria:
+${failed_criteria_display}
+feedback 摘要: ${feedback_excerpt}"
       send_system_event "generator_retry: ${TASK_ID} iter ${next_iteration}"
       exit 0
     fi
@@ -866,14 +1127,16 @@ case "$VERDICT" in
       EVENT_SYSTEM_ERRORS_JSON="$SYSTEM_ERRORS_JSON" \
       append_event "task_escalated"
 
-    feedback_excerpt="$(
-      FEEDBACK_TEXT="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}" python3 - <<'PY'
-import os
-text = os.environ["FEEDBACK_TEXT"].replace("\n", " ").replace("\r", " ").strip()
-print(text[:100])
-PY
-    )"
-    send_notification "🚨 ${TASK_ID} 已达最大 iteration (${MAX_ITERATIONS})，需人工介入. 最后 feedback: ${feedback_excerpt}"
+    failed_criteria_raw="$(get_failed_criteria "$EVAL_RESULT_PATH" || true)"
+    failed_criteria_display="$(format_bullet_list "$failed_criteria_raw")"
+    feedback_source="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}"
+    feedback_excerpt="$(summarize_text "$feedback_source" 200)"
+    send_formatted_notification "🚨 任务需人工介入" "任务名: ${TASK_NAME}
+当前迭代: ${ITERATION}
+criteria: ${PASS_COUNT}/${TOTAL_COUNT}
+失败 criteria:
+${failed_criteria_display}
+feedback 摘要: ${feedback_excerpt}"
     send_system_event "Escalated: ${TASK_ID} (verdict ${VERDICT})"
     exit 0
     ;;
@@ -883,7 +1146,9 @@ PY
       failed \
       "last_error=unknown_eval_verdict_${VERDICT}"
     EVENT_ROLE="evaluator" EVENT_REASON="unknown_eval_verdict" EVENT_VERDICT="$VERDICT" EVENT_ITERATION="$ITERATION" append_event "task_failed"
-    send_notification "❌ ${TASK_ID} evaluator 返回未知 verdict: ${VERDICT}"
+    send_formatted_notification "❌ Evaluator 返回未知 verdict" "任务ID: ${TASK_ID}
+任务名: ${TASK_NAME}
+verdict: ${VERDICT}"
     exit 0
     ;;
 esac

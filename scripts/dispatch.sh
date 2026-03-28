@@ -49,6 +49,91 @@ timestamp_utc() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
+resolve_notify_target() {
+  local config_file="${PROJECT_DIR}/nexum/config.json"
+  CONFIG_FILE="$config_file" python3 - <<'PY'
+import json
+import os
+from json import JSONDecodeError
+
+config_file = os.environ["CONFIG_FILE"]
+
+try:
+    with open(config_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (FileNotFoundError, JSONDecodeError):
+    print("/dev/null")
+    raise SystemExit(0)
+
+notify = data.get("notify")
+target = notify.get("target") if isinstance(notify, dict) else None
+if isinstance(target, str) and target.strip():
+    print(target.strip())
+else:
+    print("/dev/null")
+PY
+}
+
+send_notification() {
+  local message="$1"
+  local target
+
+  target="$(resolve_notify_target)"
+  if [ "$target" = "/dev/null" ]; then
+    return 0
+  fi
+  if ! command -v openclaw >/dev/null 2>&1; then
+    return 0
+  fi
+
+  openclaw message send --channel telegram --target "$target" -m "$message" >/dev/null 2>&1 || true
+}
+
+get_progress_summary() {
+  ACTIVE_TASKS_FILE="$ACTIVE_TASKS_FILE" python3 - <<'PY'
+import json
+import os
+from json import JSONDecodeError
+
+task_file = os.environ["ACTIVE_TASKS_FILE"]
+
+try:
+    with open(task_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (FileNotFoundError, JSONDecodeError):
+    print("0/0 done | 0 running | 0 blocked | 0 pending")
+    raise SystemExit(0)
+
+tasks = data.get("tasks")
+if not isinstance(tasks, list):
+    print("0/0 done | 0 running | 0 blocked | 0 pending")
+    raise SystemExit(0)
+
+counts = {
+    "done": 0,
+    "running": 0,
+    "blocked": 0,
+    "pending": 0,
+}
+
+total = 0
+for task in tasks:
+    if not isinstance(task, dict):
+        continue
+    total += 1
+    status = task.get("status")
+    if status in counts:
+        counts[status] += 1
+
+print(
+    f"{counts['done']}/{total} done | "
+    f"{counts['running']} running | "
+    f"{counts['blocked']} blocked | "
+    f"{counts['pending']} pending"
+)
+PY
+}
+
 shell_quote() {
   printf "%q" "$1"
 }
@@ -698,6 +783,11 @@ while IFS= read -r path; do
 done < <(json_array_to_lines "scope.files")
 [ "${#SCOPE_FILES[@]}" -gt 0 ] || fail "Contract scope.files must contain at least one file"
 
+DELIVERABLES=()
+while IFS= read -r item; do
+  DELIVERABLES+=("$item")
+done < <(json_array_to_lines "deliverables" || true)
+
 require_active_task "$TASK_ID"
 ensure_tmux_session "$TMUX_SESSION"
 
@@ -800,3 +890,14 @@ fi
 queue_tmux_runner "$TMUX_SESSION" "$LOG_FILE" "$BASE_COMMIT" "$EVAL_RESULT_PATH"
 
 echo "Dispatched ${ROLE} task ${TASK_ID} to ${TMUX_SESSION}"
+progress_summary="$(get_progress_summary)"
+send_notification "🚀 任务已派发
+━━━━━━━━━━━━━━━
+任务ID: ${TASK_ID}
+任务名称: ${CONTRACT_NAME}
+角色: ${ROLE}
+Agent: ${AGENT}
+tmux session: ${TMUX_SESSION}
+scope 文件数: ${#SCOPE_FILES[@]}
+deliverables 数: ${#DELIVERABLES[@]}
+当前进度: ${progress_summary}"
