@@ -1104,11 +1104,13 @@ ${batch_task_summaries_display}
       failed_criteria_display="$(format_bullet_list "$failed_criteria_raw")"
       feedback_source="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}"
       feedback_excerpt="$(summarize_text "$feedback_source" 200)"
+      fail_count=$((TOTAL_COUNT - PASS_COUNT))
       send_formatted_notification "🔁 任务待重试" "任务名: ${TASK_NAME}
 当前迭代: ${ITERATION}
 下一迭代: ${next_iteration}
-criteria: ${PASS_COUNT}/${TOTAL_COUNT}
-失败 criteria:
+通过 criteria: ${PASS_COUNT}/${TOTAL_COUNT}
+失败 criteria: ${fail_count}/${TOTAL_COUNT}
+失败项:
 ${failed_criteria_display}
 feedback 摘要: ${feedback_excerpt}"
       send_system_event "generator_retry: ${TASK_ID} iter ${next_iteration}"
@@ -1131,10 +1133,12 @@ feedback 摘要: ${feedback_excerpt}"
     failed_criteria_display="$(format_bullet_list "$failed_criteria_raw")"
     feedback_source="${FEEDBACK:-$(json_value "$EVAL_JSON" "system_errors" || printf '[]')}"
     feedback_excerpt="$(summarize_text "$feedback_source" 200)"
+    fail_count=$((TOTAL_COUNT - PASS_COUNT))
     send_formatted_notification "🚨 任务需人工介入" "任务名: ${TASK_NAME}
 当前迭代: ${ITERATION}
-criteria: ${PASS_COUNT}/${TOTAL_COUNT}
-失败 criteria:
+通过 criteria: ${PASS_COUNT}/${TOTAL_COUNT}
+失败 criteria: ${fail_count}/${TOTAL_COUNT}
+失败项:
 ${failed_criteria_display}
 feedback 摘要: ${feedback_excerpt}"
     send_system_event "Escalated: ${TASK_ID} (verdict ${VERDICT})"
