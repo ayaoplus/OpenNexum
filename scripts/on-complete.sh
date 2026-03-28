@@ -899,10 +899,10 @@ if [ "$ROLE" = "generator" ]; then
     CHANGED_FILES+=("$changed_file")
   done < <(git -C "$PROJECT_DIR" diff "${BASE_COMMIT}..${TASK_COMMIT_HASH}" --name-only)
   VIOLATIONS=()
-  for path in "${CHANGED_FILES[@]}"; do
+  for path in "${CHANGED_FILES[@]+"${CHANGED_FILES[@]}"}"; do
     in_scope=0
     [ -n "$path" ] || continue
-    for scope_file in "${SCOPE_FILES[@]}"; do
+    for scope_file in "${SCOPE_FILES[@]+"${SCOPE_FILES[@]}"}"; do
       if [ "$path" = "$scope_file" ]; then
         in_scope=1
         break
