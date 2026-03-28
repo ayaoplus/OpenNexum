@@ -879,10 +879,25 @@ if [ "$ROLE" = "generator" ]; then
   while IFS= read -r scope_file; do
     SCOPE_FILES+=("$scope_file")
   done < <(json_array_lines "$CONTEXT_JSON" "contract.scope.files")
+  # Find the task's own commit: the first commit reachable from HEAD but not
+  # from BASE_COMMIT that touches any of the scope files. This avoids false
+  # positives when multiple tasks run in parallel, since other tasks' commits
+  # would appear in BASE_COMMIT..HEAD but not in the task's own commit range.
+  #
+  # Strategy: find all commits between BASE_COMMIT..HEAD that touch scope files,
+  # take the most recent one as the task's commit. If none found, fall back to HEAD.
+  SCOPE_FILES_ARGS=()
+  for sf in "${SCOPE_FILES[@]}"; do
+    SCOPE_FILES_ARGS+=("$sf")
+  done
+  TASK_COMMIT_HASH="$(git -C "$PROJECT_DIR" log "${BASE_COMMIT}..HEAD" --format="%H" -- "${SCOPE_FILES_ARGS[@]}" | head -1 || true)"
+  if [ -z "$TASK_COMMIT_HASH" ]; then
+    TASK_COMMIT_HASH="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+  fi
   CHANGED_FILES=()
   while IFS= read -r changed_file; do
     CHANGED_FILES+=("$changed_file")
-  done < <(git -C "$PROJECT_DIR" diff "${BASE_COMMIT}..HEAD" --name-only)
+  done < <(git -C "$PROJECT_DIR" diff "${BASE_COMMIT}..${TASK_COMMIT_HASH}" --name-only)
   VIOLATIONS=()
   for path in "${CHANGED_FILES[@]}"; do
     in_scope=0
