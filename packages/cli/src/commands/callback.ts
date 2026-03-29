@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import type { Command } from 'commander';
 import { getTask, updateTask, readTasks, TaskStatus, loadConfig } from '@nexum/core';
 
@@ -36,7 +36,7 @@ export async function runCallback(taskId: string, projectDir: string): Promise<v
     ].join('\n');
 
     try {
-      execSync(`openclaw message send --channel telegram --target ${target} -m ${JSON.stringify(message)}`, {
+      spawnSync('openclaw', ['message', 'send', '--channel', 'telegram', '--target', target, '-m', message], {
         stdio: 'ignore',
         timeout: 10000,
       });
