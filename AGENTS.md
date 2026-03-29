@@ -5,7 +5,7 @@
 -->
 
 ## 项目概览
-- 项目：nexum-ts
+- 项目：OpenNexum
 - 技术栈：TypeScript, Node.js, pnpm monorepo, ACP
 - 类型：coding
 

@@ -43,7 +43,7 @@
     "default_local_url": "http://localhost:3000"
   },
   "project": {
-    "name": "nexum-ts",
-    "dir": "/Users/tongyaojin/code/nexum-ts"
+    "name": "OpenNexum",
+    "dir": "/Users/tongyaojin/code/OpenNexum"
   }
 }

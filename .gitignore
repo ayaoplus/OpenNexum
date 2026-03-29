@@ -2,4 +2,6 @@ node_modules/
 dist/
 .turbo/
 *.log
-nexum/runtime/screenshots/
+nexum/runtime/
+nexum/active-tasks.json
+nexum/events.jsonl
