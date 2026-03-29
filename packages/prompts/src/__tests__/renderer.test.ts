@@ -189,6 +189,16 @@ describe('built artifact (dist/index.js)', () => {
     expect(writingResult).not.toMatch(/\{\{[^}]+\}\}/);
   });
 
+  it('renderEvaluatorPrompt from built artifact outputs YAML format', async () => {
+    const fileUrl = new URL(`file://${distIndexPath}`).href;
+    const mod = await import(/* @vite-ignore */ fileUrl);
+    const result = mod.renderEvaluatorPrompt(baseContext);
+    expect(result).not.toMatch(/\{\{[^}]+\}\}/);
+    expect(result).toContain('yaml');
+    expect(result).toContain('verdict');
+    expect(result).not.toContain('JSON');
+  });
+
   it('renderRetryPrompt from built artifact includes feedback', async () => {
     const fileUrl = new URL(`file://${distIndexPath}`).href;
     const mod = await import(/* @vite-ignore */ fileUrl);
