@@ -1,4 +1,4 @@
-id: NEXUM2-005
+id: NX-005
 name: "nexum CLI — 整合命令行工具"
 type: coding
 created_at: "2026-03-29T04:00:00Z"
@@ -56,4 +56,4 @@ eval_strategy:
 generator: codex-1
 evaluator: eval
 max_iterations: 3
-depends_on: [NEXUM2-001, NEXUM2-002, NEXUM2-003, NEXUM2-004]
+depends_on: [NX-001, NX-002, NX-003, NX-004]
