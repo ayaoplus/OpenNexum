@@ -38,6 +38,7 @@ export enum TaskStatus {
   Pending = "pending",
   Blocked = "blocked",
   Running = "running",
+  GeneratorDone = "generator_done",
   Evaluating = "evaluating",
   Done = "done",
   Failed = "failed",
