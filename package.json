@@ -1,0 +1,9 @@
+{
+  "name": "nexum-ts",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm dlx turbo run build --filter=@nexum/core",
+    "test": "pnpm dlx turbo run test --filter=@nexum/core"
+  }
+}
