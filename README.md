@@ -1,8 +1,8 @@
-# OpenNexum TS / OpenNexum TS 使用文档
+# OpenNexum / OpenNexum 使用文档
 
-OpenNexum TS 是一个基于 TypeScript 和 Node.js 的 contract-driven 多 agent 编排工具。它面向需要把任务拆成明确 Contract、交给不同编码 agent 执行、再由 evaluator 回收结果的工作流。项目通过 `nexum` CLI 管理任务状态，通过 OpenClaw ACP 会话承载实际执行，并通过 Telegram 可选地推送派发与完成通知。对于需要可追踪、可重试、可审计的 AI coding orchestration，这个仓库提供了相对简洁但结构清晰的基础设施。
+OpenNexum 是一个基于 TypeScript 和 Node.js 的 contract-driven 多 agent 编排工具。它面向需要把任务拆成明确 Contract、交给不同编码 agent 执行、再由 evaluator 回收结果的工作流。项目通过 `nexum` CLI 管理任务状态，通过 OpenClaw ACP 会话承载实际执行，并通过 Telegram 可选地推送派发与完成通知。对于需要可追踪、可重试、可审计的 AI coding orchestration，这个仓库提供了相对简洁但结构清晰的基础设施。
 
-OpenNexum TS is a contract-driven orchestration toolkit for AI coding agents. It is built as a pnpm monorepo with TypeScript packages for core task management, prompt rendering, session spawning, notification delivery, and the CLI surface. The intended workflow is simple: define a task contract, generate a spawn payload, hand that payload to an ACP-capable orchestrator, track the returned session, evaluate the result, and finally mark the task as complete, failed, or escalated. This makes the system suitable for multi-agent coding pipelines where reproducibility matters more than ad hoc prompting.
+OpenNexum is a contract-driven orchestration toolkit for AI coding agents. It is built as a pnpm monorepo with TypeScript packages for core task management, prompt rendering, session spawning, notification delivery, and the CLI surface. The intended workflow is simple: define a task contract, generate a spawn payload, hand that payload to an ACP-capable orchestrator, track the returned session, evaluate the result, and finally mark the task as complete, failed, or escalated. This makes the system suitable for multi-agent coding pipelines where reproducibility matters more than ad hoc prompting.
 
 ## 项目介绍 / Project Overview
 

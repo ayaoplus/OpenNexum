@@ -1,6 +1,6 @@
 ---
-name: opennexum-ts
-version: 0.1.0
+name: opennexum
+version: 1.0.0
 description: Contract-driven multi-agent orchestration with ACP. TypeScript CLI for spawning and tracking coding agents via OpenClaw sessions_spawn.
 requires:
   node: ">=20"
