@@ -1,44 +1,46 @@
 {
   "tasks": [
     {
-      "id": "NX-001",
-      "name": "@nexum/core — Contract 类型 + Tasks 读写 + Git 封装",
+      "id": "NX2-001",
+      "name": "完善 Task 类型定义 + core 类型修复",
       "status": "pending",
-      "contract_path": "docs/nexum/contracts/NX-001.yaml",
+      "contract_path": "docs/nexum/contracts/NX2-001.yaml",
       "depends_on": []
     },
     {
-      "id": "NX-002",
-      "name": "@nexum/spawn — ACP dispatch 层",
-      "status": "pending",
-      "contract_path": "docs/nexum/contracts/NX-002.yaml",
-      "depends_on": []
-    },
-    {
-      "id": "NX-003",
-      "name": "@nexum/prompts — Prompt 模板渲染",
-      "status": "pending",
-      "contract_path": "docs/nexum/contracts/NX-003.yaml",
-      "depends_on": []
-    },
-    {
-      "id": "NX-004",
-      "name": "@nexum/notify — Telegram 通知",
-      "status": "pending",
-      "contract_path": "docs/nexum/contracts/NX-004.yaml",
-      "depends_on": []
-    },
-    {
-      "id": "NX-005",
-      "name": "nexum CLI — 整合命令行工具",
+      "id": "NX2-002",
+      "name": "nexum init 命令 + nexum.config.ts 配置加载",
       "status": "blocked",
-      "contract_path": "docs/nexum/contracts/NX-005.yaml",
-      "depends_on": [
-        "NX-001",
-        "NX-002",
-        "NX-003",
-        "NX-004"
-      ]
+      "contract_path": "docs/nexum/contracts/NX2-002.yaml",
+      "depends_on": ["NX2-001"]
+    },
+    {
+      "id": "NX2-003",
+      "name": "spawn/eval/complete 集成 config agent 映射",
+      "status": "blocked",
+      "contract_path": "docs/nexum/contracts/NX2-003.yaml",
+      "depends_on": ["NX2-002"]
+    },
+    {
+      "id": "NX2-004",
+      "name": "status --json 模式 + 统一错误码",
+      "status": "blocked",
+      "contract_path": "docs/nexum/contracts/NX2-004.yaml",
+      "depends_on": ["NX2-001"]
+    },
+    {
+      "id": "NX2-005",
+      "name": "SKILL.md + README + Contract Schema 文档",
+      "status": "blocked",
+      "contract_path": "docs/nexum/contracts/NX2-005.yaml",
+      "depends_on": ["NX2-003", "NX2-004"]
+    },
+    {
+      "id": "NX2-006",
+      "name": "发布校验 + package.json 版本 + bin 入口",
+      "status": "blocked",
+      "contract_path": "docs/nexum/contracts/NX2-006.yaml",
+      "depends_on": ["NX2-005"]
     }
   ]
 }
