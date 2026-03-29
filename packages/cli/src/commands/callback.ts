@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process';
 import type { Command } from 'commander';
-import { getTask, updateTask, readTasks, TaskStatus, loadConfig } from '@nexum/core';
+import { getTask, updateTask, TaskStatus, loadConfig } from '@nexum/core';
+import { sendMessage } from '@nexum/notify';
 
 export async function runCallback(taskId: string, projectDir: string): Promise<void> {
   const task = await getTask(projectDir, taskId);
@@ -19,30 +19,16 @@ export async function runCallback(taskId: string, projectDir: string): Promise<v
   const chatId = notifyConfig?.target ?? process.env['TELEGRAM_CHAT_ID'];
   const botToken = notifyConfig?.botToken ?? process.env['TELEGRAM_BOT_TOKEN'];
 
-  // Send notification via openclaw CLI (no need to manage bot tokens directly)
-  const target = notifyConfig?.target ?? chatId;
-  if (target) {
-    const tasks = await readTasks(projectDir).catch(() => []);
-    const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
-    const progress = `${doneCount}/${tasks.length}`;
-
+  if (chatId && botToken) {
     const message = [
       '✅ Generator 完成',
       '━━━━━━━━━━━━━━━',
       `📋 任务内容: ${task.name}`,
       `🆔 任务ID: ${taskId}`,
-      `📊 进度: ${progress}`,
       '💬 等待编排者触发 eval',
     ].join('\n');
 
-    try {
-      spawnSync('openclaw', ['message', 'send', '--channel', 'telegram', '--target', target, '-m', message], {
-        stdio: 'ignore',
-        timeout: 10000,
-      });
-    } catch {
-      // Notification failure is non-fatal
-    }
+    await sendMessage(chatId, message, botToken);
   }
 
   console.log(JSON.stringify({ ok: true, taskId, status: TaskStatus.GeneratorDone }));
