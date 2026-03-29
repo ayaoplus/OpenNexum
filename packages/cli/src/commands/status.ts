@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { Command } from 'commander';
-import { readTasks, TaskStatus } from '@nexum/core';
+import { readTasks, TaskStatus, NexumError, ErrorCode } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
 
 /** Read the last N non-empty lines from an ACP stream log JSONL file */
@@ -28,8 +28,21 @@ async function getStreamActivity(streamLogPath: string, lines = 2): Promise<stri
   }
 }
 
-export async function runStatus(projectDir: string): Promise<void> {
+export async function runStatus(projectDir: string, options: { json?: boolean } = {}): Promise<void> {
   const tasks = await readTasks(projectDir);
+
+  if (options.json) {
+    const output = tasks.map((task) => ({
+      id: task.id,
+      name: task.name,
+      status: task.status,
+      iteration: task.iteration,
+      acp_session_key: task.acp_session_key,
+      acp_stream_log: task.acp_stream_log,
+    }));
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
 
   if (tasks.length === 0) {
     console.log('No tasks found.');
@@ -54,12 +67,11 @@ export async function runStatus(projectDir: string): Promise<void> {
       : '';
 
     let activityLine = '';
-    const taskExtra = task as unknown as Record<string, unknown>;
     if (
       (task.status === TaskStatus.Running || task.status === TaskStatus.Evaluating) &&
-      taskExtra.acp_stream_log
+      task.acp_stream_log
     ) {
-      const activity = await getStreamActivity(taskExtra.acp_stream_log as string);
+      const activity = await getStreamActivity(task.acp_stream_log);
       if (activity) {
         activityLine = `\n    💬 ${activity}`;
       }
@@ -87,11 +99,16 @@ export function registerStatus(program: Command): void {
     .command('status')
     .description('Show status of all tasks with live ACP activity')
     .option('--project <dir>', 'Project directory', process.cwd())
-    .action(async (options: { project: string }) => {
+    .option('--json', 'Output task list as JSON')
+    .action(async (options: { project: string; json?: boolean }) => {
       try {
-        await runStatus(options.project);
+        await runStatus(options.project, { json: options.json });
       } catch (err) {
-        console.error('status failed:', err instanceof Error ? err.message : err);
+        if (err instanceof NexumError) {
+          console.error(`status failed [${err.code}]: ${err.message}`);
+        } else {
+          console.error('status failed:', err instanceof Error ? err.message : err);
+        }
         process.exit(1);
       }
     });
