@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderGeneratorPrompt, renderEvaluatorPrompt, renderRetryPrompt } from '../renderer';
 import type { PromptContext } from '../types';
-import { createRequire } from 'module';
 import { existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
