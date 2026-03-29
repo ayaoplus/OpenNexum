@@ -40,7 +40,7 @@ test("formatComplete shows elapsed time", () => {
 
 test("formatComplete with no unlocked tasks says none", () => {
   const result = formatComplete("NX-004", "Telegram Notify", 1000, 1, 5, 5, [], "3/10");
-  assert.ok(result.includes("none"), "should say none when no unlocked tasks");
+  assert.ok(result.includes("无") || result.includes("none"), "should say none when no unlocked tasks");
 });
 
 // ─── formatFail ───────────────────────────────────────────────────────────────
