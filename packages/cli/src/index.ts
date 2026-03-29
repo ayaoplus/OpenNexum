@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { registerInit } from './commands/init.js';
 import { registerSpawn } from './commands/spawn.js';
 import { registerTrack } from './commands/track.js';
 import { registerStatus } from './commands/status.js';
@@ -13,6 +14,7 @@ program
   .description('Nexum task orchestration CLI')
   .version('0.0.0');
 
+registerInit(program);
 registerSpawn(program);
 registerTrack(program);
 registerStatus(program);
