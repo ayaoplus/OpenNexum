@@ -1,185 +1,190 @@
-# Contract YAML Schema
+# Contract Schema Reference
 
-Contract 是 nexum 任务系统的核心数据结构，定义了一个 AI agent 任务的边界、
-交付物和评估策略。文件存放在 `docs/nexum/contracts/<ID>.yaml`。
+本文档描述 OpenNexum TS 使用的 Contract YAML 字段。说明以 `packages/core/src/types.ts` 的 `Contract` 接口和 `packages/core/src/contract.ts` 的校验逻辑为准。
 
-对应 TypeScript 类型：`packages/core/src/types.ts` → `Contract` interface。
+## Overview
 
----
+Contract 是任务的单一事实来源。CLI 会根据它决定：
 
-## 顶层字段
+- 任务名称和类型
+- 可修改文件范围
+- 交付物清单
+- 评估策略与判定标准
+- generator / evaluator 的 agent 选择
+- 最大重试次数
+- 依赖关系
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | `string` | ✓ | 任务唯一标识符，如 `NX2-001` |
-| `name` | `string` | ✓ | 人类可读的任务名称 |
-| `type` | `"coding" \| "task" \| "creative"` | ✓ | 任务类型 |
-| `created_at` | `string` (ISO 8601) | ✓ | 创建时间，如 `"2026-03-29T09:00:00Z"` |
-| `scope` | `ContractScope` | ✓ | 文件范围与边界约束（见下） |
-| `deliverables` | `string[]` | ✓ | 交付物列表，每条为一句话描述 |
-| `eval_strategy` | `ContractEvalStrategy` | ✓ | 评估策略（见下） |
-| `generator` | `string` | ✓ | 生成 agent 的 ID，对应 `nexum/config.json` 的 `agents` 键 |
-| `evaluator` | `string` | ✓ | 评估 agent 的 ID，同上 |
-| `max_iterations` | `number` | ✓ | 最大重试次数，超过后任务标记 Failed |
-| `depends_on` | `string[]` | ✓ | 前置任务 ID 列表，为空时写 `[]` |
+## Required Fields
 
----
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | Yes | Unique task ID, such as `NX2-005` |
+| `name` | string | Yes | Human-readable task name |
+| `type` | `coding | task | creative` | Yes | Contract category |
+| `created_at` | string | Yes | ISO timestamp required by runtime validation |
+| `scope` | object | Yes | File scope, boundaries, and conflict declarations |
+| `deliverables` | string[] | Yes | Expected outputs of the task |
+| `eval_strategy` | object | Yes | Evaluation mode and criteria |
+| `generator` | string | Yes | Agent ID used for implementation |
+| `evaluator` | string | Yes | Agent ID used for review/evaluation |
+| `max_iterations` | number | Yes | Maximum retry count before final failure |
+| `depends_on` | string[] | Yes | Upstream task IDs that must be done first |
 
-## `scope` 字段
+## Field Details
+
+### `id`
+
+任务唯一标识。建议使用稳定、可排序的编号，例如 `NX-001` 或 `NX2-005`。该字段同时会被用于：
+
+- `nexum spawn <taskId>`
+- `nexum eval <taskId>`
+- `nexum complete <taskId> <verdict>`
+- prompt 文件命名
+- retry commit message 命名
+
+### `name`
+
+任务可读名称。CLI 会在 prompt、状态输出、通知消息中使用它。应避免过长，但要足够具体。
+
+### `type`
+
+允许值：
+
+- `coding`
+- `task`
+- `creative`
+
+当前实现中，`type` 主要作为分类元数据；并不会自动切换不同执行器逻辑，但评估器和编排者可以基于它做路由。
+
+### `scope`
+
+`scope` 是一个对象，包含以下子字段：
+
+| Subfield | Type | Required | Description |
+| --- | --- | --- | --- |
+| `files` | string[] | Yes | Files expected to be changed or delivered |
+| `boundaries` | string[] | Yes | Paths that must stay out of scope |
+| `conflicts_with` | string[] | Yes | Task IDs that conflict with this task |
+
+#### `scope.files`
+
+列出本任务应直接涉及的文件路径。`nexum spawn` 会把它们拼入建议的 `git add -- ...` 命令中，因此这里应尽量精确。
+
+#### `scope.boundaries`
+
+列出禁止扩散修改的目录、模块或区域。这个字段是给 agent 和 reviewer 的边界提醒，帮助降低无关修改的风险。
+
+#### `scope.conflicts_with`
+
+用于标记互斥任务。当前 CLI 没有自动执行冲突调度，但该字段对上层 orchestrator 很重要，可用于避免同时派发相互覆盖的任务。
+
+### `deliverables`
+
+字符串数组。每一项都应描述一个可以被 reviewer 验证的交付物，例如：
+
+- `README.md with setup and workflow`
+- `SKILL.md for ClawHub-compatible discovery`
+- `Reference guide for sessions_spawn`
+
+建议写成结果导向，而不是过程导向。
+
+### `eval_strategy`
+
+`eval_strategy` 是一个对象，包含：
+
+| Subfield | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `unit | integration | review` | Yes | Evaluation strategy category |
+| `criteria` | array | Yes | Criteria list used by the evaluator |
+
+#### `eval_strategy.type`
+
+允许值：
+
+- `unit`
+- `integration`
+- `review`
+
+当前仓库里，文档任务通常使用 `review`。即便选择 `unit` 或 `integration`，是否真的执行自动化测试仍取决于 evaluator prompt 和外部 orchestrator。
+
+#### `eval_strategy.criteria`
+
+criteria 为对象数组，每项包含：
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | Yes | Criterion ID such as `C1` |
+| `desc` | string | Yes | What the evaluator should verify |
+| `method` | string | Yes | How to verify it |
+| `threshold` | string | Yes | Passing threshold, often `pass` |
+
+`nexum complete` 在失败时会尝试从 evaluator 结果文件中提取失败 criteria，并据此构建 retry prompt。
+
+### `generator`
+
+字符串，表示负责编码或产出主结果的 agent ID。它会被 `nexum spawn` 读出，并结合 `nexum/config.json` 的 `agents` 配置解析为具体 CLI。
+
+### `evaluator`
+
+字符串，表示负责审查、验证或打分的 agent ID。`nexum eval` 使用该字段选择 evaluator。
+
+### `max_iterations`
+
+数字。表示 evaluator 返回 `fail` 后，最多允许重试多少轮。`nexum complete` 的行为如下：
+
+- `fail` 且当前 `iteration < max_iterations`：返回 retry payload
+- `fail` 且已达到上限：任务进入 `failed`
+- `escalated`：直接进入 `failed`，并标记需要人工介入
+
+### `depends_on`
+
+字符串数组，表示当前任务依赖的上游任务 ID。任务完成后，`nexum complete` 会尝试解锁依赖它的下游任务；只有当所有依赖都已经 `done` 时，下游任务才会从 `blocked` 转为 `pending`。
+
+## Example
 
 ```yaml
-scope:
-  files:
-    - packages/core/src/types.ts    # generator 被允许修改的文件
-  boundaries:
-    - packages/spawn/               # 禁止修改的目录/文件（只读边界）
-    - packages/prompts/
-  conflicts_with:
-    - NX2-003                       # 与本任务存在文件冲突的其他任务 ID
-```
-
-| 子字段 | 类型 | 说明 |
-|--------|------|------|
-| `files` | `string[]` | generator 的工作文件范围，prompt 中会列出这些路径 |
-| `boundaries` | `string[]` | 明确禁止修改的路径（用于 prompt 中的约束说明） |
-| `conflicts_with` | `string[]` | 与本任务存在并发冲突的任务 ID，编排者应避免同时运行 |
-
----
-
-## `eval_strategy` 字段
-
-```yaml
-eval_strategy:
-  type: unit
-  criteria:
-    - id: C1
-      desc: "Task interface 包含所有新字段"
-      method: "review: 检查 types.ts 的 Task interface"
-      threshold: pass
-    - id: C2
-      desc: "pnpm build && pnpm test 通过"
-      method: "unit: 运行构建和测试"
-      threshold: pass
-```
-
-### `eval_strategy.type`
-
-| 值 | 说明 |
-|----|------|
-| `unit` | 单元测试 / 构建验证 |
-| `integration` | 集成测试 |
-| `review` | 代码审查（evaluator agent 阅读代码判断） |
-
-### `criteria` 数组（`ContractCriterion`）
-
-| 子字段 | 类型 | 说明 |
-|--------|------|------|
-| `id` | `string` | 标准唯一 ID，如 `C1`、`C2` |
-| `desc` | `string` | 验收标准的人类可读描述 |
-| `method` | `string` | 检验方法，格式为 `"<type>: <说明>"`，`type` 可为 `review`、`unit`、`integration` |
-| `threshold` | `string` | 通过阈值，目前固定为 `pass` |
-
----
-
-## `generator` / `evaluator` agent ID
-
-对应 `nexum/config.json` 中 `agents` 对象的键名。系统通过 `resolveAgentCli(config, agentId)`
-将其映射为具体的 CLI 类型（`"claude"` 或 `"codex"`）。
-
-**内置 agent ID 示例：**
-
-| ID | CLI | 用途 |
-|----|-----|------|
-| `cc-frontend` | claude | 前端/TypeScript 编码 |
-| `cc-writer` | claude | 文档撰写 |
-| `eval` | codex | 代码评估（高推理模式） |
-| `codex-frontend` | codex | 前端编码（codex） |
-| `plan` | claude | 规划任务 |
-| `gardener` | claude | 维护任务 |
-
-未在 `config.json` 中配置的 agent ID 默认使用 `"codex"` CLI。
-
----
-
-## 完整示例
-
-```yaml
-id: NX2-001
-name: "完善 Task 类型定义 + core 类型修复"
+id: NX2-005
+name: "SKILL.md + README + Contract Schema 文档"
 type: coding
 created_at: "2026-03-29T09:00:00Z"
 
 scope:
   files:
-    - packages/core/src/types.ts
-    - packages/core/src/tasks.ts
-    - packages/core/src/__tests__/tasks.test.ts
+    - SKILL.md
+    - README.md
+    - references/contract-schema.md
+    - references/orchestrator-guide.md
   boundaries:
-    - packages/spawn/
-    - packages/prompts/
-    - packages/notify/
-    - packages/cli/
+    - packages/
+    - nexum/
   conflicts_with: []
 
 deliverables:
-  - "Task interface 补充以下字段（均可选）：acp_session_key、acp_stream_log、started_at、completed_at、eval_result_path、base_commit、last_error"
-  - "TaskStatus 枚举补充 Evaluating = 'evaluating' 和 Cancelled = 'cancelled'"
-  - "pnpm build 和 pnpm test 均通过，无 TypeScript 编译错误"
+  - "ClawHub-compatible skill description"
+  - "Bilingual README"
+  - "Contract schema reference"
+  - "Orchestrator workflow reference"
 
 eval_strategy:
-  type: unit
+  type: review
   criteria:
     - id: C1
-      desc: "Task interface 包含所有新字段，均为可选类型"
-      method: "review: 检查 types.ts 的 Task interface"
-      threshold: pass
-    - id: C2
-      desc: "TaskStatus 包含 Evaluating 和 Cancelled"
-      method: "review: 检查 TaskStatus 枚举"
-      threshold: pass
-    - id: C3
-      desc: "pnpm build && pnpm test 通过"
-      method: "unit: 运行构建和测试"
+      desc: "Docs are complete"
+      method: "review"
       threshold: pass
 
-generator: cc-frontend
-evaluator: eval
+generator: codex
+evaluator: claude
 max_iterations: 3
-depends_on: []
+depends_on:
+  - NX2-003
+  - NX2-004
 ```
 
----
+## Authoring Notes
 
-## 运行时任务状态（Task）
-
-Contract 被加载后，编排者在 `nexum/active-tasks.json` 中维护对应的 `Task` 记录：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | `string` | 与 Contract `id` 相同 |
-| `name` | `string` | 与 Contract `name` 相同 |
-| `status` | `TaskStatus` | 当前状态（见下） |
-| `contract_path` | `string` | Contract YAML 文件的相对路径 |
-| `depends_on` | `string[]` | 同 Contract |
-| `iteration` | `number?` | 当前重试次数，从 0 开始 |
-| `acp_session_key` | `string?` | openclaw 分配的 session key |
-| `acp_stream_log` | `string?` | ACP stream log 文件路径（JSONL） |
-| `eval_result_path` | `string?` | evaluator 写入结果的 YAML 路径 |
-| `base_commit` | `string?` | spawn 时的 git HEAD |
-| `head_commit` | `string?` | 完成时的 git HEAD |
-| `last_error` | `string?` | 失败时的错误信息 |
-| `started_at` | `string?` | 首次 spawn 的 ISO 时间戳 |
-| `completed_at` | `string?` | 完成时的 ISO 时间戳 |
-| `updated_at` | `string?` | 最后更新时间戳 |
-
-### TaskStatus 枚举
-
-| 值 | 说明 |
-|----|------|
-| `pending` | 等待调度（所有依赖已满足） |
-| `blocked` | 有未完成的前置任务 |
-| `running` | generator agent 正在运行 |
-| `evaluating` | evaluator agent 正在评估 |
-| `done` | 任务完成 |
-| `failed` | 超过最大重试次数或被标记失败 |
-| `cancelled` | 已取消 |
+- Keep `scope.files` narrow and explicit.
+- Always include `created_at`, even if higher-level docs omit it.
+- Write `deliverables` and criteria so an evaluator can judge them without guessing.
+- Use stable `generator` / `evaluator` IDs that exist in `nexum/config.json`.
+- Treat `depends_on` as scheduling truth, not optional commentary.

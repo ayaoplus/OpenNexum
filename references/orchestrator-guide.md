@@ -1,309 +1,157 @@
-# Orchestrator Guide — AI 编排者工作流程
+# Orchestrator Guide
 
-本文档面向 AI 编排者（orchestrator agent），说明如何使用 nexum-ts CLI
-驱动完整的任务生命周期。
+本指南面向负责调度 OpenNexum TS 的 AI 编排者、脚本或服务。目标是把 `nexum` CLI 生成的 payload 安全地转换为 ACP session，并在整个执行过程中维护可追踪状态。
 
----
+## Role Split
 
-## 概览
+OpenNexum TS 和 orchestrator 的职责边界应当明确：
 
-编排者的职责：
-1. 读取 `nexum status --json` 了解当前任务状态
-2. 对 `pending` 任务调用 `nexum spawn` 获取 SpawnPayload
-3. 调用 `openclaw sessions spawn` 启动 generator agent，保存 `sessionKey` 和 `streamLogPath`
-4. 轮询 heartbeat，等待 agent 完成
-5. 调用 `nexum eval` 启动 evaluator agent，重复步骤 3-4
-6. 读取 eval result YAML，调用 `nexum complete <verdict>` 推进状态
-7. 对 `retry` 结果重复步骤 3-4；对 `pass` 结果检查新解锁的任务
+- `nexum` CLI: 生成 prompt、管理任务状态、处理评估结果、发送通知
+- orchestrator: 调用 `sessions_spawn`、保存 session 输出、执行 heartbeat、在适当时机调用 `track` / `eval` / `complete`
 
----
+这样做的原因很简单：任务语义属于仓库，运行时控制属于编排层。
 
-## Step 1：查询任务状态
+## From `nexum spawn` to `sessions_spawn`
 
-```bash
-nexum status --json
-```
+`nexum spawn <taskId>` 和 `nexum eval <taskId>` 都会输出 JSON payload。编排者应读取其中的关键字段并映射到 `sessions_spawn` 参数。
 
-**返回示例：**
-```json
-[
-  { "id": "NX2-001", "name": "完善 Task 类型定义", "status": "done" },
-  { "id": "NX2-002", "name": "nexum init 命令", "status": "pending" },
-  { "id": "NX2-003", "name": "Spawn/Eval/Complete 整合", "status": "blocked" }
-]
-```
+常见映射关系如下：
 
-选取 `status === "pending"` 的任务进入 Step 2。
+| `sessions_spawn` param | Source | Meaning |
+| --- | --- | --- |
+| `runtime` | fixed value | Usually `acp` |
+| `agentId` | `payload.agentId` | Contract-selected generator or evaluator |
+| `task` | `payload.promptContent` or task file wrapper | The actual prompt/instruction payload |
+| `cwd` | `payload.cwd` | Working directory for the agent |
+| `streamTo` | orchestrator-defined path or sink | Where streaming logs should be written |
 
----
-
-## Step 2：派发 Generator — `nexum spawn`
-
-```bash
-nexum spawn <taskId> [--project-dir <path>]
-```
-
-**stdout 输出（JSON SpawnPayload）：**
-```json
-{
-  "taskId": "NX2-002",
-  "taskName": "nexum init 命令",
-  "agentId": "cc-frontend",
-  "agentCli": "claude",
-  "promptFile": "/abs/path/nexum/runtime/prompts/NX2-002-gen-iter0.md",
-  "promptContent": "# Task: NX2-002\n...",
-  "label": "NX2-002-gen-iter0",
-  "cwd": "/abs/path/to/project"
-}
-```
-
-**字段说明：**
-
-| 字段 | 说明 |
-|------|------|
-| `agentId` | Contract 中配置的 generator ID |
-| `agentCli` | 解析后的 CLI 类型：`"claude"` 或 `"codex"` |
-| `promptFile` | prompt 已写入磁盘的绝对路径 |
-| `label` | 用于 openclaw 的 session 标签 |
-| `cwd` | agent 工作目录 |
-
-> `nexum spawn` 已将任务状态更新为 `running` 并记录 `base_commit`。
-
----
-
-## Step 3：调用 openclaw sessions spawn
-
-根据 `agentCli` 选择不同调用方式：
-
-### agentCli === "claude"（Claude Code）
-
-```bash
-openclaw sessions spawn \
-  --runtime acp \
-  --agent <agentId> \
-  --mode code \
-  --cwd <cwd> \
-  --label <label> \
-  --task-file <promptFile>
-```
-
-### agentCli === "codex"（OpenAI Codex）
-
-```bash
-openclaw sessions spawn \
-  --runtime acp \
-  --agent <agentId> \
-  --mode code \
-  --cwd <cwd> \
-  --label <label> \
-  --task-file <promptFile>
-```
-
-**openclaw 返回示例（JSON）：**
-```json
-{
-  "childSessionKey": "sess_abc123xyz",
-  "streamLogPath": "/tmp/acp-streams/sess_abc123xyz.jsonl"
-}
-```
-
-**必须保存：**
-- `sessionKey`（即 `childSessionKey` / `sessionKey` / `key` 三者之一）
-- `streamLogPath`（ACP stream log 文件路径，用于 heartbeat 读取）
-
-> openclaw 也会直接更新 `nexum/active-tasks.json` 中的 `acp_session_key` 字段。
-
----
-
-## Step 4：Heartbeat 轮询
-
-轮询直到 agent 完成：
-
-```bash
-# 查询 session 状态
-openclaw sessions status <sessionKey>
-```
-
-或直接读取 streamLogPath（JSONL 格式），检测 `type: "done"` 或 `type: "error"` 事件。
-
-**轮询建议：**
-- 间隔：30 秒
-- 超时：根据任务复杂度，建议 30 分钟
-- 若超时，可将任务标记为 failed：`nexum complete <taskId> escalated`
-
-**判断完成的信号：**
-1. `openclaw sessions status` 返回 `status: "done"` / `"error"`
-2. streamLogPath 中出现 `{"type":"session_end",...}` 事件
-
----
-
-## Step 5：派发 Evaluator — `nexum eval`
-
-```bash
-nexum eval <taskId> [--project-dir <path>]
-```
-
-输出与 `nexum spawn` 相同格式的 `SpawnPayload`，但 `agentId` 来自 Contract 的 `evaluator` 字段。
-
-同时 nexum 已将任务状态更新为 `evaluating`，并在 `eval_result_path` 记录评估结果的预期写入路径：
-
-```
-nexum/runtime/eval/<taskId>-iter-<n>.yaml
-```
-
-重复 Step 3-4，等待 evaluator agent 完成并将结果写入该路径。
-
----
-
-## Step 6：读取 Eval Result
-
-evaluator agent 完成后，读取 `eval_result_path` 文件：
-
-```yaml
-# nexum/runtime/eval/NX2-002-iter-0.yaml
-task_id: NX2-002
-verdict: pass          # pass | fail | escalated
-feedback: "所有交付物已验证通过"
-failed_criteria: []
-pass_count: 3
-total_count: 3
-criteria_results:
-  - id: C1
-    passed: true
-    notes: "init.ts 已创建，目录结构正确"
-  - id: C2
-    passed: true
-    notes: "config.json 加载逻辑实现正确"
-  - id: C3
-    passed: true
-    notes: "pnpm build && pnpm test 通过"
-evaluated_at: "2026-03-29T10:30:00Z"
-iteration: 0
-commit_hash: "d963745"
-summary: "任务完成，所有标准通过"
-```
-
----
-
-## Step 7：处理结果 — `nexum complete`
-
-```bash
-nexum complete <taskId> <verdict> [--project-dir <path>]
-```
-
-### verdict: pass
+一个推荐的概念请求如下：
 
 ```json
 {
-  "action": "done",
-  "taskId": "NX2-002",
-  "unlockedTasks": ["NX2-003"]
+  "runtime": "acp",
+  "agentId": "codex",
+  "task": "contents of payload.promptContent",
+  "cwd": "/Users/tongyaojin/code/nexum-ts",
+  "streamTo": "/tmp/nexum/NX2-005-gen.jsonl"
 }
 ```
 
-- 任务状态 → `done`
-- 返回 `unlockedTasks`：依赖本任务的下游任务现已解锁（状态 `blocked` → `pending`）
-- 对每个 unlockedTasks 重新进入 Step 2
+如果你的环境不是直接把 prompt 文本放进 `task` 字段，而是传 `task-file`、URI 或附件句柄，也可以做适配。关键点不是字段名表面一致，而是要保留这五个语义：运行时、目标 agent、任务内容、工作目录、日志流目标。
 
-### verdict: fail（未超过 max_iterations）
+## Recommended Spawn Sequence
 
-```json
-{
-  "action": "retry",
-  "taskId": "NX2-002",
-  "retryPayload": {
-    "taskId": "NX2-002",
-    "agentId": "cc-frontend",
-    "agentCli": "claude",
-    "promptFile": "/abs/path/nexum/runtime/prompts/NX2-002-retry-iter1.md",
-    "promptContent": "...",
-    "label": "NX2-002-retry-iter1",
-    "cwd": "/abs/path/to/project"
-  }
-}
+1. Run `nexum spawn <taskId>` or `nexum eval <taskId>`.
+2. Parse the JSON payload.
+3. Call `sessions_spawn` with `runtime`, `agentId`, `task`, `cwd`, and `streamTo`.
+4. Capture `sessionKey`.
+5. Capture `streamLogPath` if the ACP runtime returns one.
+6. Persist both by calling:
+
+```bash
+nexum track <taskId> <sessionKey> --stream-log <streamLogPath>
 ```
 
-- `retryPayload` 包含带有前次失败反馈的 retry prompt
-- 直接用 `retryPayload` 重新调用 openclaw（Step 3）
+`track` 会写回 `nexum/active-tasks.json`，把 `acp_session_key` 和 `acp_stream_log` 记录下来。随后 `nexum status` 就能展示 session key 尾部和最近的流式文本片段。
 
-### verdict: escalated 或超过 max_iterations
+## Heartbeat / Polling Logic
 
-```json
-{
-  "action": "escalated",
-  "taskId": "NX2-002"
-}
+当前仓库里已有一套明确的 heartbeat 逻辑，来源于 `packages/spawn/src/status.ts`：
+
+- 默认超时: `5 * 60 * 1000` ms，即 5 分钟
+- 默认轮询间隔: `1000` ms，即 1 秒
+- 状态来源: `openclaw sessions list --json`
+- session 匹配键: `key`、`sessionKey`、`childSessionKey`
+
+归一化后的状态只有四种：
+
+- `running`
+- `done`
+- `failed`
+- `unknown`
+
+状态归一化规则摘要：
+
+- 若原始状态是 `running`、`done`、`failed`，直接使用
+- 若原始状态是 `completed`、`complete`、`succeeded`，归一化为 `done`
+- 若原始状态是 `error`、`aborted`，归一化为 `failed`
+- 若记录中存在 `endedAt` 或 `completedAt`，则视为结束；若同时带有错误字段则记为 `failed`
+- 若不存在匹配 session，则返回 `unknown`
+
+推荐心跳伪流程：
+
+```text
+while before deadline:
+  query sessions list
+  find record by sessionKey
+  normalize status
+  if done:
+    continue workflow
+  if failed:
+    mark failure / escalate
+  if unknown:
+    decide whether to retry lookup or inspect stream log
+  sleep 1s
+timeout => escalate or mark infrastructure failure
 ```
 
-- 任务状态 → `failed`
-- 需要人工介入，检查 `nexum/runtime/eval/` 中的评估历史
+## Stream Log Handling
 
----
+如果 `sessions_spawn` 支持把流式输出写入 JSONL，编排者应始终启用。当前 `nexum status` 的展示逻辑会：
 
-## 错误处理
+- 读取 `acp_stream_log`
+- 解析 JSONL
+- 选取含有 `text` 字段的最近两条非空事件
+- 每条截断到 80 个字符
+- 组合为单行活动摘要
 
-所有 nexum 命令在出错时返回非零退出码，并输出 JSON 错误对象（当任务以 `--json` 模式调用时）：
+这意味着 `streamTo` 最好指向一个稳定可读的文件路径，而不是仅发送到标准输出。
 
-```json
-{
-  "error": "TASK_NOT_FOUND",
-  "message": "Task NX2-999 not found in active-tasks.json"
-}
+## Generator and Evaluator Loop
+
+推荐把 generator 和 evaluator 看作同一套编排模板的两次实例化：
+
+1. `nexum spawn <taskId>`
+2. spawn generator session
+3. `nexum track ...`
+4. heartbeat until generator finishes
+5. `nexum eval <taskId>`
+6. spawn evaluator session
+7. `nexum track ...` for evaluator if you maintain a separate stream
+8. heartbeat until evaluator finishes
+9. `nexum complete <taskId> <verdict>`
+
+如果 `complete` 返回：
+
+- `action: "done"`: task closed, optional downstream tasks unlocked
+- `action: "retry"`: use `retryPayload` to spawn the next generator iteration
+- `action: "failed"`: no more retries, task stops
+- `action: "escalated"`: human intervention required
+
+## Practical Guidance
+
+- Always persist `sessionKey` immediately after spawn succeeds.
+- Always store a stream log path if the runtime can provide one.
+- Treat `unknown` as an infrastructure signal, not a business verdict.
+- Keep `cwd` equal to the project root returned by the payload unless you have a strong reason not to.
+- Prefer idempotent orchestration steps so you can resume after partial failure.
+
+## Minimal Example
+
+```text
+payload = nexum spawn NX2-005
+session = sessions_spawn(
+  runtime="acp",
+  agentId=payload.agentId,
+  task=payload.promptContent,
+  cwd=payload.cwd,
+  streamTo="/tmp/nexum/NX2-005-gen.jsonl"
+)
+nexum track NX2-005 session.sessionKey --stream-log /tmp/nexum/NX2-005-gen.jsonl
+heartbeat(session.sessionKey)
+payload2 = nexum eval NX2-005
+...
+nexum complete NX2-005 pass
 ```
 
-**常见错误码：**
-
-| 错误码 | 说明 | 处理建议 |
-|--------|------|----------|
-| `TASK_NOT_FOUND` | 任务 ID 不存在 | 检查 active-tasks.json |
-| `CONTRACT_NOT_FOUND` | Contract YAML 文件缺失 | 检查 contract_path |
-| `INVALID_VERDICT` | verdict 参数不合法 | 只允许 pass/fail/escalated |
-| `CONFIG_INVALID` | nexum/config.json 格式错误 | 修复配置文件 |
-| `GIT_ERROR` | git 操作失败 | 检查工作区是否干净 |
-| `SESSION_TIMEOUT` | ACP session 超时 | 增大超时或检查 agent 日志 |
-
----
-
-## 完整编排伪代码
-
-```typescript
-async function orchestrate(projectDir: string) {
-  while (true) {
-    const tasks = await runJson("nexum status --json");
-    const pending = tasks.filter(t => t.status === "pending");
-
-    if (pending.length === 0) break;
-
-    for (const task of pending) {
-      // Step 2: spawn generator
-      const spawnPayload = await runJson(`nexum spawn ${task.id}`);
-
-      // Step 3: call openclaw
-      const { sessionKey, streamLogPath } = await callOpenclaw(spawnPayload);
-
-      // Step 4: heartbeat
-      await waitForSession(sessionKey, streamLogPath);
-
-      // Step 5: spawn evaluator
-      const evalPayload = await runJson(`nexum eval ${task.id}`);
-      const { sessionKey: evalKey } = await callOpenclaw(evalPayload);
-      await waitForSession(evalKey, evalPayload.streamLogPath);
-
-      // Step 6: read eval result
-      const evalResult = readYaml(task.eval_result_path);
-
-      // Step 7: complete
-      const result = await runJson(`nexum complete ${task.id} ${evalResult.verdict}`);
-
-      if (result.action === "retry") {
-        // retry: 用 retryPayload 重新 spawn
-        await callOpenclaw(result.retryPayload);
-        // ... continue heartbeat + eval loop
-      } else if (result.action === "done") {
-        // 新解锁的任务在下次循环中处理
-        console.log("Unlocked:", result.unlockedTasks);
-      }
-    }
-  }
-}
-```
+把这套顺序稳定下来后，OpenNexum TS 就能作为一个清晰的 contract engine，而 ACP runtime 则作为纯执行层被复用。这样最容易扩展，也最容易排错。

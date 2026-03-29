@@ -1,244 +1,242 @@
-# nexum-ts
+# OpenNexum TS / OpenNexum TS 使用文档
 
-nexum 任务编排系统的 TypeScript 实现。通过 Contract YAML 定义任务边界，
-由 AI 编排者协调多个 agent 完成编码任务、自动评估、重试与下游解锁。
+OpenNexum TS 是一个基于 TypeScript 和 Node.js 的 contract-driven 多 agent 编排工具。它面向需要把任务拆成明确 Contract、交给不同编码 agent 执行、再由 evaluator 回收结果的工作流。项目通过 `nexum` CLI 管理任务状态，通过 OpenClaw ACP 会话承载实际执行，并通过 Telegram 可选地推送派发与完成通知。对于需要可追踪、可重试、可审计的 AI coding orchestration，这个仓库提供了相对简洁但结构清晰的基础设施。
 
-## 与 OpenNexum bash 版的区别
+OpenNexum TS is a contract-driven orchestration toolkit for AI coding agents. It is built as a pnpm monorepo with TypeScript packages for core task management, prompt rendering, session spawning, notification delivery, and the CLI surface. The intended workflow is simple: define a task contract, generate a spawn payload, hand that payload to an ACP-capable orchestrator, track the returned session, evaluate the result, and finally mark the task as complete, failed, or escalated. This makes the system suitable for multi-agent coding pipelines where reproducibility matters more than ad hoc prompting.
 
-| 特性 | bash 版 | nexum-ts |
-|------|---------|----------|
-| 语言 | bash | TypeScript |
-| 类型安全 | 无 | 完整 TypeScript 类型 |
-| 包结构 | 单文件脚本 | pnpm monorepo（core/cli/spawn/prompts/notify） |
-| 错误码 | 无统一规范 | `NexumError` + `ErrorCode` 枚举 |
-| 并发安全 | 无锁机制 | 文件锁 + atomic write (tmpfile rename) |
-| 配置 | 硬编码 | `nexum/config.json` 可配置 agent 映射 |
-| 通知 | 无 | Telegram Bot API 集成 |
-| 测试 | 无 | vitest 单元测试 |
+## 项目介绍 / Project Overview
 
----
+仓库的核心思想是“先定义 Contract，再运行 agent”。Contract 决定任务边界、交付物、评估标准、依赖关系，以及 generator / evaluator 的分工。CLI 侧的 `nexum spawn` 和 `nexum eval` 只负责生成 prompt 与 spawn payload，不直接替你调度 ACP；真正的编排者可以是另一个 agent、脚本、服务端调度器，或者任何能够调用 `sessions_spawn` 的外部系统。这样设计的好处是职责边界清楚：Nexum 负责任务语义和状态文件，OpenClaw 负责执行会话。
 
-## 安装
+The repository is organized as a small monorepo:
+
+- `packages/core`: contract parsing, task status, config loading, git helpers
+- `packages/prompts`: generator, evaluator, and retry prompt rendering
+- `packages/spawn`: OpenClaw session spawn/status helpers
+- `packages/notify`: Telegram notification utilities
+- `packages/cli`: the `nexum` command surface
+
+运行时状态主要保存在 `nexum/active-tasks.json`。任务进入 `running`、`evaluating`、`done`、`failed` 等状态时，CLI 会原子更新这个文件。`nexum status` 还会在有 `acp_stream_log` 时读取最近两条文本事件，用于展示 session 的最新活动片段。
+
+## 安装 / Installation
+
+前置要求 / Requirements:
+
+- Node.js `>=20`
+- `pnpm`
+- `openclaw`
+
+安装与构建:
 
 ```bash
-# 安装依赖
 pnpm install
-
-# 构建所有包
 pnpm build
-
-# 运行测试
-pnpm test
 ```
 
-**前置依赖：** Node.js ≥ 20，pnpm，openclaw（ACP session 调度器）
+如果你希望通过 `nexum` 直接在本地调用 OpenClaw CLI，请确保 `openclaw` 已在 `PATH` 中可用。虽然当前 README 重点描述 orchestrator 驱动的 `sessions_spawn` 流程，但仓库内部的 `@nexum/spawn` 也提供了与 OpenClaw CLI 交互的能力，适合后续自动化扩展。
 
----
+If you want to use Telegram notifications, export the following variables before running the workflow:
 
-## 环境变量
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token，与 `TELEGRAM_CHAT_ID` 同时设置时启用通知 |
-| `TELEGRAM_CHAT_ID` | 否 | 接收通知的 Telegram Chat ID |
-
-也可在 `nexum/config.json` 的 `notify.target` 中配置 Chat ID（优先级低于环境变量）。
-
----
-
-## 工作流程
-
+```bash
+export TELEGRAM_BOT_TOKEN=your_bot_token
+export TELEGRAM_CHAT_ID=your_chat_id
 ```
+
+这两个变量都是可选的。未设置时，任务流程仍可正常运行，只是不会发送派发通知与完成通知。
+
+## 初始化 / Initialization
+
+执行初始化命令:
+
+```bash
 nexum init
-    │
-    ▼
-[编写 Contract YAML]  →  docs/nexum/contracts/<ID>.yaml
-    │
-    ▼
-nexum spawn <taskId>          # 生成 generator SpawnPayload
-    │
-    ▼ (编排者调用 openclaw sessions spawn)
-[openclaw sessions spawn ...]  →  返回 sessionKey
-    │
-    ▼
-[heartbeat 轮询 ACP session 状态]
-    │
-    ▼
-nexum eval <taskId>           # 生成 evaluator SpawnPayload
-    │
-    ▼ (编排者调用 openclaw sessions spawn)
-[evaluator agent 写入 eval result YAML]
-    │
-    ▼
-nexum complete <taskId> <verdict>
-    ├── pass       →  TaskStatus=Done，解锁下游任务
-    ├── fail       →  iteration++，返回 retry SpawnPayload（回到 spawn 步骤）
-    └── escalated  →  TaskStatus=Failed，人工介入
 ```
 
----
+该命令会在项目中准备基础目录与文件，包括：
 
-## Contract YAML 示例
+- `nexum/active-tasks.json`
+- `nexum/config.json`
+- `docs/nexum/contracts/.gitkeep`
+- `nexum/runtime/eval/.gitkeep`
+
+`nexum/config.json` 默认包含 `codex` 和 `claude` 两个 agent 配置示例。你可以按需扩展 `agents` 字段，把 contract 中的 `generator` 或 `evaluator` 映射到具体 CLI。
+
+## 工作流程 / Workflow
+
+典型工作流程如下：
+
+```text
+nexum init
+  -> create Contract YAML
+  -> nexum spawn <taskId>
+  -> orchestrator calls sessions_spawn
+  -> nexum track <taskId> <sessionKey> --stream-log <path>
+  -> heartbeat polls session status
+  -> nexum eval <taskId>
+  -> orchestrator calls sessions_spawn for evaluator
+  -> nexum complete <taskId> <pass|fail|escalated>
+```
+
+中文说明：
+
+1. 编写 Contract YAML，放入 `docs/nexum/contracts/`。
+2. 通过 `nexum spawn <taskId>` 生成 generator 的 prompt 与 spawn payload。
+3. 外部 orchestrator 将 payload 转换为 `sessions_spawn` 请求，并获取 `sessionKey`。
+4. 调用 `nexum track` 记录 `sessionKey` 与可选 `streamLogPath`。
+5. 编排者执行 heartbeat，周期性检查该 session 是否完成。
+6. 完成后调用 `nexum eval <taskId>`，生成 evaluator payload 并再次调度。
+7. evaluator 写出评估结果文件后，调用 `nexum complete <taskId> <verdict>`。
+8. 若 verdict 为 `fail` 且未超过 `max_iterations`，CLI 会返回 retry payload；否则任务进入 `done`、`failed` 或 `escalated`。
+
+English summary:
+
+1. Author a Contract YAML file under `docs/nexum/contracts/`.
+2. Run `nexum spawn <taskId>` to prepare the generator prompt and spawn payload.
+3. Let your orchestrator call `sessions_spawn` and capture the returned session key.
+4. Persist that key with `nexum track`.
+5. Poll session state until completion.
+6. Run `nexum eval <taskId>` to prepare the evaluator prompt.
+7. Spawn the evaluator session and wait for the evaluation artifact.
+8. Finalize with `nexum complete`, which may unlock downstream tasks or return a retry payload.
+
+## 命令参考 / Command Reference
+
+### `nexum init`
+
+初始化项目结构。若目标文件已存在，则不会覆盖。
+
+Initialize the standard project structure and seed default config/state files.
+
+```bash
+nexum init
+nexum init --project /path/to/project
+```
+
+### `nexum spawn <taskId>`
+
+读取任务与 Contract，渲染 generator prompt，写入 `nexum/runtime/prompts/`，并输出 JSON payload。当前 payload 包含：
+
+- `taskId`
+- `taskName`
+- `agentId`
+- `agentCli`
+- `promptFile`
+- `promptContent`
+- `label`
+- `cwd`
+
+```bash
+nexum spawn NX2-005
+```
+
+### `nexum track <taskId> <sessionKey>`
+
+在 session 创建成功后记录会话标识。若编排者有日志流文件，也应同时传入 `--stream-log`，以便 `nexum status` 展示活动摘要。
+
+```bash
+nexum track NX2-005 sess_123456 --stream-log /tmp/nx2-005.jsonl
+```
+
+### `nexum eval <taskId>`
+
+为 evaluator 生成 prompt 与 spawn payload，并把任务状态切到 `evaluating`。
+
+```bash
+nexum eval NX2-005
+```
+
+### `nexum complete <taskId> <verdict>`
+
+处理 evaluator 结果。支持的 verdict 为 `pass`、`fail`、`escalated`。
+
+- `pass`: 标记任务完成，并尝试解锁依赖它的下游任务
+- `fail`: 若当前 iteration 小于 `max_iterations`，返回 retry payload
+- `escalated`: 标记失败并要求人工介入
+
+```bash
+nexum complete NX2-005 pass
+nexum complete NX2-005 fail
+nexum complete NX2-005 escalated
+```
+
+### `nexum status`
+
+展示任务状态总览。若记录了 `acp_stream_log`，还会展示最近的文本活动片段。`--json` 可用于机器读取。
+
+```bash
+nexum status
+nexum status --json
+```
+
+## 环境变量 / Environment Variables
+
+支持的环境变量如下：
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token for dispatch/failure/completion notifications |
+| `TELEGRAM_CHAT_ID` | No | Telegram chat ID receiving the messages |
+
+通知由 `packages/notify` 提供；如果任一变量缺失，CLI 会跳过消息发送，不影响主流程。
+
+## Contract YAML 示例 / Contract YAML Example
+
+下面是一个与当前实现兼容的 Contract 示例。注意：`created_at` 在实际解析和校验时是必填字段，尽管很多高层说明只强调核心业务字段。
 
 ```yaml
-id: NX2-001
-name: "完善 Task 类型定义 + core 类型修复"
+id: NX2-005
+name: "Document OpenNexum skill and orchestration flow"
 type: coding
 created_at: "2026-03-29T09:00:00Z"
 
 scope:
   files:
-    - packages/core/src/types.ts
-    - packages/core/src/tasks.ts
-    - packages/core/src/__tests__/tasks.test.ts
+    - SKILL.md
+    - README.md
+    - references/contract-schema.md
+    - references/orchestrator-guide.md
   boundaries:
-    - packages/spawn/
-    - packages/prompts/
+    - packages/
+    - nexum/
   conflicts_with: []
 
 deliverables:
-  - "Task interface 补充 acp_session_key、acp_stream_log 等可选字段"
-  - "pnpm build 和 pnpm test 均通过"
+  - "Skill description for ClawHub-compatible discovery"
+  - "Bilingual README with workflow and command reference"
+  - "Contract schema reference aligned with @nexum/core"
+  - "Orchestrator guide for sessions_spawn and heartbeat"
 
 eval_strategy:
-  type: unit
+  type: review
   criteria:
     - id: C1
-      desc: "Task interface 包含所有新字段，均为可选类型"
-      method: "review: 检查 types.ts 的 Task interface"
+      desc: "Skill frontmatter and quick start are complete"
+      method: "review"
       threshold: pass
     - id: C2
-      desc: "pnpm build && pnpm test 通过"
-      method: "unit: 运行构建和测试"
+      desc: "README covers install, env, workflow, commands, and examples"
+      method: "review"
       threshold: pass
 
-generator: cc-frontend
-evaluator: eval
+generator: codex
+evaluator: claude
 max_iterations: 3
-depends_on: []
+depends_on:
+  - NX2-003
+  - NX2-004
 ```
 
-完整字段说明见 [`references/contract-schema.md`](references/contract-schema.md)。
+## 编排建议 / Orchestration Notes
 
----
+推荐把 `nexum spawn` 与 `nexum eval` 当作“生成任务描述”的步骤，而不是把 CLI 直接绑死到某个单一执行器。这样你可以根据实际环境选择本地 agent、远程 ACP runtime、队列系统，或自定义的 `sessions_spawn` wrapper。核心原则是：Nexum 输出结构化 payload，orchestrator 负责启动、观察和回填 session 信息。
 
-## 命令参考
+Treat the CLI as the source of truth for task semantics, not as the sole execution engine. In practice, the most robust setup is a thin orchestrator that:
 
-### `nexum init`
+1. calls `nexum spawn`
+2. translates the payload into a `sessions_spawn` request
+3. records `sessionKey` and `streamLogPath` with `nexum track`
+4. polls until the session ends
+5. repeats the same pattern for evaluation
+6. finalizes with `nexum complete`
 
-初始化 nexum 目录结构，生成 `nexum/active-tasks.json`、`nexum/config.json`、
-`docs/nexum/contracts/.gitkeep`。
-
-```bash
-nexum init [--project-dir <path>]
-```
-
-### `nexum spawn <taskId>`
-
-为指定任务准备 generator prompt，输出 JSON `SpawnPayload`。
-同时将任务状态更新为 `running`，记录 `base_commit`。
-
-```bash
-nexum spawn NX2-001 [--project-dir <path>]
-```
-
-**输出（stdout JSON）：**
-```json
-{
-  "taskId": "NX2-001",
-  "taskName": "完善 Task 类型定义",
-  "agentId": "cc-frontend",
-  "agentCli": "claude",
-  "promptFile": "/path/to/nexum/runtime/prompts/NX2-001-gen-0.md",
-  "promptContent": "...",
-  "label": "NX2-001-gen-iter0",
-  "cwd": "/path/to/project"
-}
-```
-
-### `nexum eval <taskId>`
-
-为指定任务准备 evaluator prompt，输出 JSON `SpawnPayload`。
-同时将任务状态更新为 `evaluating`，记录 `eval_result_path`。
-
-```bash
-nexum eval NX2-001 [--project-dir <path>]
-```
-
-### `nexum complete <taskId> <verdict>`
-
-处理评估结果，推进任务状态。`verdict` 为 `pass`、`fail` 或 `escalated`。
-
-```bash
-nexum complete NX2-001 pass [--project-dir <path>]
-```
-
-**输出（stdout JSON）：**
-```json
-// pass
-{ "action": "done", "taskId": "NX2-001", "unlockedTasks": ["NX2-003"] }
-
-// fail（未超过 max_iterations）
-{ "action": "retry", "taskId": "NX2-001", "retryPayload": { /* SpawnPayload */ } }
-
-// escalated 或超过 max_iterations
-{ "action": "escalated", "taskId": "NX2-001" }
-```
-
-### `nexum status`
-
-显示所有任务的当前状态。
-
-```bash
-nexum status [--json] [--project-dir <path>]
-```
-
-`--json` 输出机器可读的 JSON 数组：
-```json
-[
-  {
-    "id": "NX2-001",
-    "name": "完善 Task 类型定义",
-    "status": "done",
-    "iteration": 0,
-    "acp_session_key": "session-abc123",
-    "acp_stream_log": "/path/to/stream.jsonl"
-  }
-]
-```
-
-### `nexum track <taskId>`
-
-追踪运行中任务的实时 ACP session 日志。
-
-```bash
-nexum track NX2-001 [--project-dir <path>]
-```
-
----
-
-## 项目结构
-
-```
-packages/
-  core/       # 类型定义、Contract 解析、任务状态管理、配置
-  cli/        # CLI 命令入口（init/spawn/eval/complete/status/track）
-  spawn/      # ACP session 调度（封装 openclaw CLI）
-  prompts/    # Prompt 渲染（generator/evaluator/retry）
-  notify/     # Telegram 通知
-docs/
-  nexum/contracts/   # Contract YAML 文件
-  design/            # 设计文档
-  lessons/           # 踩坑记录
-nexum/
-  active-tasks.json  # 任务状态（运行时数据）
-  config.json        # Agent 映射与通知配置
-  runtime/           # 生成的 prompt 文件和 eval 结果
-```
-
----
-
-## 参考文档
-
-- [Contract Schema](references/contract-schema.md) — Contract YAML 完整字段说明
-- [Orchestrator Guide](references/orchestrator-guide.md) — AI 编排者工作流程
+这种分层方式让 Contract、状态管理、通知、重试和依赖解锁逻辑都保持在仓库内，而 ACP runtime 的细节则留给编排层处理。
