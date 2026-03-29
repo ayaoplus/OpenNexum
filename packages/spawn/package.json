@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "../prompts/node_modules/.bin/tsc -p tsconfig.json",
     "test": "pnpm dlx --package=tsx tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {

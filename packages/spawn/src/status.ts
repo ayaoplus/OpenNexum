@@ -1,12 +1,22 @@
-import { execa } from "execa";
-
 import type { SessionStatus } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 1_000;
-const testingGlobals = globalThis as typeof globalThis & {
-  __nexumStatusExeca?: typeof execa;
+type ExecaResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
 };
+type ExecaRunner = (
+  command: string,
+  args: string[],
+  options: { reject: false }
+) => Promise<ExecaResult>;
+const testingGlobals = globalThis as typeof globalThis & {
+  __nexumStatusExeca?: ExecaRunner;
+};
+let cachedExecaRunner: ExecaRunner | undefined;
+const loadExecaModule = new Function("return import('execa')") as () => Promise<{ execa: ExecaRunner }>;
 
 export class TimeoutError extends Error {
   constructor(message: string) {
@@ -16,7 +26,9 @@ export class TimeoutError extends Error {
 }
 
 export async function getSessionStatus(sessionKey: string): Promise<SessionStatus> {
-  const result = await getExecaRunner()("openclaw", ["sessions", "list", "--json"], { reject: false });
+  const result = await (await getExecaRunner())("openclaw", ["sessions", "list", "--json"], {
+    reject: false
+  });
 
   if (result.exitCode !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to list OpenClaw sessions.");
@@ -113,6 +125,16 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function getExecaRunner(): typeof execa {
-  return testingGlobals.__nexumStatusExeca ?? execa;
+async function getExecaRunner(): Promise<ExecaRunner> {
+  if (testingGlobals.__nexumStatusExeca) {
+    return testingGlobals.__nexumStatusExeca;
+  }
+
+  if (cachedExecaRunner) {
+    return cachedExecaRunner;
+  }
+
+  const { execa } = await loadExecaModule();
+  cachedExecaRunner = execa;
+  return execa;
 }

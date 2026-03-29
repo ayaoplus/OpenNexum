@@ -1,14 +1,24 @@
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { execa } from "execa";
-
 import type { SessionRecord, SpawnOptions } from "./types.js";
 
 const ACTIVE_TASKS_RELATIVE_PATH = path.join("nexum", "active-tasks.json");
-const testingGlobals = globalThis as typeof globalThis & {
-  __nexumSpawnExeca?: typeof execa;
+type ExecaResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
 };
+type ExecaRunner = (
+  command: string,
+  args: string[],
+  options: { reject: false }
+) => Promise<ExecaResult>;
+const testingGlobals = globalThis as typeof globalThis & {
+  __nexumSpawnExeca?: ExecaRunner;
+};
+let cachedExecaRunner: ExecaRunner | undefined;
+const loadExecaModule = new Function("return import('execa')") as () => Promise<{ execa: ExecaRunner }>;
 
 interface ActiveTask {
   id: string;
@@ -42,7 +52,7 @@ export async function spawnAcpSession(options: SpawnOptions): Promise<SessionRec
     options.label,
     ...buildPromptArgs(options.promptFile)
   ];
-  const result = await getExecaRunner()("openclaw", args, { reject: false });
+  const result = await (await getExecaRunner())("openclaw", args, { reject: false });
 
   if (result.exitCode !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to spawn ACP session.");
@@ -159,6 +169,16 @@ async function resolveProjectDir(startDir: string): Promise<string> {
   }
 }
 
-function getExecaRunner(): typeof execa {
-  return testingGlobals.__nexumSpawnExeca ?? execa;
+async function getExecaRunner(): Promise<ExecaRunner> {
+  if (testingGlobals.__nexumSpawnExeca) {
+    return testingGlobals.__nexumSpawnExeca;
+  }
+
+  if (cachedExecaRunner) {
+    return cachedExecaRunner;
+  }
+
+  const { execa } = await loadExecaModule();
+  cachedExecaRunner = execa;
+  return execa;
 }
