@@ -53,7 +53,7 @@ eval_strategy:
       method: "integration: 运行 pnpm build"
       threshold: pass
 
-generator: codex-1
+generator: cc-frontend
 evaluator: eval
 max_iterations: 3
 depends_on: [NX-001, NX-002, NX-003, NX-004]
