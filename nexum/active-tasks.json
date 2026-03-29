@@ -1,0 +1,39 @@
+{
+  "tasks": [
+    {
+      "id": "NEXUM2-001",
+      "name": "@nexum/core — Contract 类型 + Tasks 读写 + Git 封装",
+      "status": "pending",
+      "contract_path": "docs/nexum/contracts/NEXUM2-001.yaml",
+      "depends_on": []
+    },
+    {
+      "id": "NEXUM2-002",
+      "name": "@nexum/spawn — ACP dispatch 层",
+      "status": "pending",
+      "contract_path": "docs/nexum/contracts/NEXUM2-002.yaml",
+      "depends_on": []
+    },
+    {
+      "id": "NEXUM2-003",
+      "name": "@nexum/prompts — Prompt 模板渲染",
+      "status": "pending",
+      "contract_path": "docs/nexum/contracts/NEXUM2-003.yaml",
+      "depends_on": []
+    },
+    {
+      "id": "NEXUM2-004",
+      "name": "@nexum/notify — Telegram 通知",
+      "status": "pending",
+      "contract_path": "docs/nexum/contracts/NEXUM2-004.yaml",
+      "depends_on": []
+    },
+    {
+      "id": "NEXUM2-005",
+      "name": "nexum CLI — 整合命令行工具",
+      "status": "blocked",
+      "contract_path": "docs/nexum/contracts/NEXUM2-005.yaml",
+      "depends_on": ["NEXUM2-001", "NEXUM2-002", "NEXUM2-003", "NEXUM2-004"]
+    }
+  ]
+}
