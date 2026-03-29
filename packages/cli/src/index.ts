@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { registerSpawn } from './commands/spawn.js';
+import { registerTrack } from './commands/track.js';
 import { registerStatus } from './commands/status.js';
 import { registerEval } from './commands/eval.js';
 import { registerComplete } from './commands/complete.js';
@@ -13,6 +14,7 @@ program
   .version('0.0.0');
 
 registerSpawn(program);
+registerTrack(program);
 registerStatus(program);
 registerEval(program);
 registerComplete(program);

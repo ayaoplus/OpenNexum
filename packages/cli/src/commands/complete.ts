@@ -10,29 +10,26 @@ import {
   getHeadCommit,
 } from '@nexum/core';
 import type { EvalVerdict } from '@nexum/core';
-import type { SpawnOptions, SessionRecord } from '@nexum/spawn';
 import { renderRetryPrompt } from '@nexum/prompts';
 import { formatComplete, formatFail, sendMessage, getChatId, getBotToken } from '@nexum/notify';
 
-// Global mock hooks for testing
-const testingGlobals = globalThis as typeof globalThis & {
-  __nexumCliSpawnAcpSession?: (opts: SpawnOptions) => Promise<SessionRecord>;
-  __nexumCliSendMessage?: (chatId: string, text: string, token: string) => Promise<void>;
-};
-
-async function getSpawnFn(): Promise<(opts: SpawnOptions) => Promise<SessionRecord>> {
-  if (testingGlobals.__nexumCliSpawnAcpSession) {
-    return testingGlobals.__nexumCliSpawnAcpSession;
-  }
-  const { spawnAcpSession } = await import('@nexum/spawn');
-  return spawnAcpSession;
+export interface RetryPayload {
+  action: 'retry';
+  taskId: string;
+  taskName: string;
+  agentId: string;
+  promptFile: string;
+  promptContent: string;
+  label: string;
+  cwd: string;
+  nextIteration: number;
 }
 
-async function getNotifyFn(): Promise<(chatId: string, text: string, token: string) => Promise<void>> {
-  if (testingGlobals.__nexumCliSendMessage) {
-    return testingGlobals.__nexumCliSendMessage;
-  }
-  return sendMessage;
+export interface CompleteResult {
+  action: 'done' | 'retry' | 'escalated' | 'failed';
+  taskId: string;
+  unlockedTasks?: string[];
+  retryPayload?: RetryPayload;
 }
 
 interface EvalSummary {
@@ -48,14 +45,12 @@ async function readEvalSummary(evalResultPath: string): Promise<EvalSummary> {
     const feedbackMatch = content.match(/^feedback:\s*["']?(.*?)["']?\s*$/m);
     const feedback = feedbackMatch?.[1]?.trim() ?? '';
 
-    // Count pass/fail from criteria_results
     const passMatches = [...content.matchAll(/result:\s*pass/g)];
     const failMatches = [...content.matchAll(/result:\s*fail/g)];
     const passCount = passMatches.length;
     const failCount = failMatches.length;
     const totalCount = passCount + failCount;
 
-    // Extract failed criteria IDs
     const failedCriteria: string[] = [];
     const criteriaBlocks = content.split(/\n\s*-\s*id:\s*/);
     for (const block of criteriaBlocks.slice(1)) {
@@ -98,7 +93,7 @@ export async function runComplete(
   taskId: string,
   verdict: string,
   projectDir: string
-): Promise<void> {
+): Promise<CompleteResult> {
   const normalizedVerdict = verdict as EvalVerdict;
   if (!['pass', 'fail', 'escalated'].includes(normalizedVerdict)) {
     throw new Error(`Invalid verdict: ${verdict}. Must be pass, fail, or escalated.`);
@@ -125,6 +120,7 @@ export async function runComplete(
   const chatId = getChatId();
   const botToken = getBotToken();
 
+  // ── PASS ──
   if (normalizedVerdict === 'pass') {
     const now = new Date().toISOString();
     await updateTask(projectDir, taskId, {
@@ -137,7 +133,6 @@ export async function runComplete(
     if (chatId && botToken) {
       const tasks = await readTasks(projectDir);
       const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
-      const progress = `${doneCount}/${tasks.length}`;
       const msg = formatComplete(
         taskId,
         contract.name,
@@ -146,18 +141,16 @@ export async function runComplete(
         evalSummary.passCount,
         evalSummary.totalCount,
         unlockedIds,
-        progress
+        `${doneCount}/${tasks.length}`
       );
-      const notifyFn = await getNotifyFn();
-      await notifyFn(chatId, msg, botToken);
+      await sendMessage(chatId, msg, botToken).catch(() => {});
     }
 
-    console.log(`Task ${taskId} completed. Unlocked: ${unlockedIds.join(', ') || 'none'}`);
-    return;
+    return { action: 'done', taskId, unlockedTasks: unlockedIds };
   }
 
+  // ── FAIL + can retry ──
   if (normalizedVerdict === 'fail' && iteration < contract.max_iterations) {
-    // Retry: increment iteration, re-spawn generator
     const nextIteration = iteration + 1;
     const nextEvalResultPath = path.join(
       projectDir,
@@ -191,26 +184,14 @@ export async function runComplete(
     await writeFile(promptFile, promptContent, 'utf8');
 
     const baseCommit = await getHeadCommit(projectDir).catch(() => '');
-
     await updateTask(projectDir, taskId, {
       status: TaskStatus.Running,
       iteration: nextIteration,
+      eval_result_path: nextEvalResultPath,
       ...(baseCommit ? { base_commit: baseCommit } : {}),
     });
 
-    const spawnFn = await getSpawnFn();
-    const record = await spawnFn({
-      taskId,
-      agentId: contract.generator,
-      promptFile,
-      cwd: projectDir,
-      mode: 'session',
-      label: `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`,
-    });
-
-    await updateTask(projectDir, taskId, {
-      acp_session_key: record.sessionKey,
-    });
+    const label = `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`;
 
     if (chatId && botToken) {
       const msg = formatFail(
@@ -223,21 +204,33 @@ export async function runComplete(
         evalSummary.failedCriteria,
         evalSummary.feedback.slice(0, 200)
       );
-      const notifyFn = await getNotifyFn();
-      await notifyFn(chatId, msg, botToken);
+      await sendMessage(chatId, msg, botToken).catch(() => {});
     }
 
-    console.log(`Task ${taskId} failed. Retrying as iteration ${nextIteration}.`);
-    return;
+    const retryPayload: RetryPayload = {
+      action: 'retry',
+      taskId,
+      taskName: contract.name,
+      agentId: contract.generator,
+      promptFile,
+      promptContent,
+      label,
+      cwd: projectDir,
+      nextIteration,
+    };
+
+    return { action: 'retry', taskId, retryPayload };
   }
 
-  // fail with max_iterations reached, or escalated: mark as failed
+  // ── ESCALATED or max iterations reached ──
+  const reason =
+    normalizedVerdict === 'escalated'
+      ? 'Escalated: requires human intervention'
+      : `Failed after ${iteration} iterations`;
+
   await updateTask(projectDir, taskId, {
     status: TaskStatus.Failed,
-    last_error:
-      normalizedVerdict === 'escalated'
-        ? 'Escalated: requires human intervention'
-        : `Failed after ${iteration} iterations`,
+    last_error: reason,
   });
 
   if (chatId && botToken) {
@@ -249,29 +242,26 @@ export async function runComplete(
       evalSummary.totalCount,
       evalSummary.failedCriteria.length,
       evalSummary.failedCriteria,
-      normalizedVerdict === 'escalated'
-        ? 'Escalated: requires human intervention'
-        : evalSummary.feedback.slice(0, 200)
+      normalizedVerdict === 'escalated' ? reason : evalSummary.feedback.slice(0, 200)
     );
-    const notifyFn = await getNotifyFn();
-    await notifyFn(chatId, msg, botToken);
+    await sendMessage(chatId, msg, botToken).catch(() => {});
   }
 
-  const reason =
-    normalizedVerdict === 'escalated'
-      ? 'escalated — human intervention required'
-      : `failed after max iterations (${contract.max_iterations})`;
-  console.log(`Task ${taskId} ${reason}.`);
+  return {
+    action: normalizedVerdict === 'escalated' ? 'escalated' : 'failed',
+    taskId,
+  };
 }
 
 export function registerComplete(program: Command): void {
   program
     .command('complete <taskId> <verdict>')
-    .description('Process evaluator result for a task (verdict: pass|fail|escalated)')
+    .description('Process evaluator result (verdict: pass|fail|escalated). Outputs JSON — retry action includes spawn payload for orchestrator.')
     .option('--project <dir>', 'Project directory', process.cwd())
     .action(async (taskId: string, verdict: string, options: { project: string }) => {
       try {
-        await runComplete(taskId, verdict, options.project);
+        const result = await runComplete(taskId, verdict, options.project);
+        console.log(JSON.stringify(result, null, 2));
       } catch (err) {
         console.error('complete failed:', err instanceof Error ? err.message : err);
         process.exit(1);
