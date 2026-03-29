@@ -47,7 +47,7 @@ export async function writeTasks(projectDir: string, tasks: Task[]): Promise<voi
 export async function updateTask(
   projectDir: string,
   taskId: string,
-  patch: Partial<Omit<Task, "id">>
+  patch: Partial<Task>
 ): Promise<Task> {
   return withTasksLock(projectDir, async () => {
     const tasks = await readTasks(projectDir);

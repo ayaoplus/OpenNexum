@@ -54,6 +54,40 @@ test("updateTask uses atomic writes under concurrent updates", async () => {
   );
 });
 
+test("updateTask writes acp_session_key and acp_stream_log fields", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-tasks-"));
+  const nexumDir = path.join(projectDir, "nexum");
+  const activeTasksPath = path.join(nexumDir, "active-tasks.json");
+
+  await mkdir(nexumDir, { recursive: true });
+
+  const initialTasks: ActiveTasksFile = {
+    tasks: [
+      {
+        id: "NX-001",
+        name: "Task 1",
+        status: TaskStatus.Pending,
+        contract_path: "docs/nexum/contracts/NX-001.yaml",
+        depends_on: []
+      }
+    ]
+  };
+
+  await writeFile(activeTasksPath, JSON.stringify(initialTasks, null, 2) + "\n", "utf8");
+
+  await updateTask(projectDir, "NX-001", {
+    acp_session_key: "session-abc123",
+    acp_stream_log: "/tmp/stream.log"
+  });
+
+  const rawContents = await readFile(activeTasksPath, "utf8");
+  const parsed = JSON.parse(rawContents) as ActiveTasksFile;
+  const task = parsed.tasks.find((t) => t.id === "NX-001");
+
+  assert.equal(task?.acp_session_key, "session-abc123");
+  assert.equal(task?.acp_stream_log, "/tmp/stream.log");
+});
+
 test("getUnlockedTasks returns pending tasks whose dependencies are now satisfied", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-tasks-"));
   const nexumDir = path.join(projectDir, "nexum");

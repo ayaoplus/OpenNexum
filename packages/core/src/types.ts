@@ -40,7 +40,8 @@ export enum TaskStatus {
   Running = "running",
   Evaluating = "evaluating",
   Done = "done",
-  Failed = "failed"
+  Failed = "failed",
+  Cancelled = "cancelled"
 }
 
 export interface Task {
@@ -54,6 +55,7 @@ export interface Task {
   base_commit?: string;
   head_commit?: string;
   acp_session_key?: string;
+  acp_stream_log?: string;
   tmux_session?: string;
   last_error?: string | null;
   eval_result_path?: string;
