@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/templates dist/templates",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

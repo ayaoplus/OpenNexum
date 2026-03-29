@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { renderGeneratorPrompt, renderEvaluatorPrompt, renderRetryPrompt } from '../renderer';
 import type { PromptContext } from '../types';
+import { createRequire } from 'module';
+import { existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname_test = dirname(fileURLToPath(import.meta.url));
+// src/__tests__ -> src -> packages/prompts -> dist/index.js
+const distIndexPath = resolve(__dirname_test, '../../dist/index.js');
 
 const baseContract = {
   id: 'NX-TEST',
@@ -148,5 +156,46 @@ describe('renderRetryPrompt', () => {
   it('has no residual {{...}} placeholders', () => {
     const result = renderRetryPrompt(baseContext, 'fail', 'Fix needed', ['C1']);
     expect(result).not.toMatch(/\{\{[^}]+\}\}/);
+  });
+});
+
+describe('built artifact (dist/index.js)', () => {
+  it('dist/index.js exists after build', () => {
+    expect(existsSync(distIndexPath)).toBe(true);
+  });
+
+  it('dist/templates/ directory exists after build', () => {
+    const distTemplatesDir = resolve(__dirname_test, '../../dist/templates');
+    expect(existsSync(distTemplatesDir)).toBe(true);
+  });
+
+  it('renderGeneratorPrompt from built artifact works for coding type', async () => {
+    const fileUrl = new URL(`file://${distIndexPath}`).href;
+    const mod = await import(/* @vite-ignore */ fileUrl);
+    const result = mod.renderGeneratorPrompt(baseContext);
+    expect(result).not.toMatch(/\{\{[^}]+\}\}/);
+    expect(result).toContain('Test Task');
+  });
+
+  it('renderGeneratorPrompt from built artifact works for creative type', async () => {
+    const fileUrl = new URL(`file://${distIndexPath}`).href;
+    const mod = await import(/* @vite-ignore */ fileUrl);
+    const creativeContext: PromptContext = {
+      ...baseContext,
+      contract: { ...baseContract, type: 'creative' },
+    };
+    const codingResult = mod.renderGeneratorPrompt(baseContext);
+    const writingResult = mod.renderGeneratorPrompt(creativeContext);
+    expect(writingResult).not.toBe(codingResult);
+    expect(writingResult).not.toMatch(/\{\{[^}]+\}\}/);
+  });
+
+  it('renderRetryPrompt from built artifact includes feedback', async () => {
+    const fileUrl = new URL(`file://${distIndexPath}`).href;
+    const mod = await import(/* @vite-ignore */ fileUrl);
+    const result = mod.renderRetryPrompt(baseContext, 'fail', 'Fix this issue', ['C1']);
+    expect(result).toContain('fail');
+    expect(result).toContain('Fix this issue');
+    expect(result).toContain('C1');
   });
 });
