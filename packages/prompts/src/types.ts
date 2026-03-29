@@ -33,4 +33,5 @@ export interface PromptContext {
   gitCommitCmd: string;
   evalResultPath: string;
   lessons: string[];
+  projectDir?: string;
 }

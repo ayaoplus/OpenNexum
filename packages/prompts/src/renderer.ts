@@ -35,6 +35,8 @@ function applyVariables(template: string, vars: Record<string, string>): string 
 function generatorVars(context: PromptContext): Record<string, string> {
   return {
     TASK_NAME: context.task.name,
+    TASK_ID: context.task.id,
+    PROJECT_DIR: context.projectDir ?? process.cwd(),
     SCOPE_FILES: formatList(context.contract.scope.files),
     DELIVERABLES: formatList(context.contract.deliverables),
     CRITERIA_PREVIEW: formatCriteria(context.contract.eval_strategy.criteria),

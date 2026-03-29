@@ -18,11 +18,27 @@ const CALLBACK_BLOCK_END = "<!-- nexum:callback:end -->";
 const CALLBACK_PROTOCOL_BLOCK = `${CALLBACK_BLOCK_START}
 ## Nexum 回调协议（必须遵守）
 
-每完成一个 nexum 任务后，必须执行：
+每完成一个 nexum 任务后，必须执行以下命令（在 git commit + push 之后）：
+
+\`\`\`bash
+nexum callback <taskId> --project <projectDir> \\
+  --model <使用的模型名> \\
+  --input-tokens <input token 数量> \\
+  --output-tokens <output token 数量>
 \`\`\`
-nexum callback <taskId> --project <projectDir>
+
+示例：
+\`\`\`bash
+nexum callback INFRA-001 --project /path/to/project \\
+  --model claude-sonnet-4-6 \\
+  --input-tokens 12345 \\
+  --output-tokens 2048
 \`\`\`
-这一步会触发评估流程和 Telegram 通知，不可跳过。
+
+注意事项：
+- token 数量从本次对话的实际消耗中读取，无法确认时填 0
+- 模型名填当前使用的模型（如 claude-sonnet-4-6、gpt-5.4 等）
+- 此步骤会触发评估流程和 Telegram 通知，不可跳过
 ${CALLBACK_BLOCK_END}
 `;
 

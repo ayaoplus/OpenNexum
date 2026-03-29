@@ -74,6 +74,7 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     gitCommitCmd,
     evalResultPath,
     lessons: [],
+    projectDir,
   });
 
   const promptsDir = path.join(projectDir, 'nexum', 'runtime', 'prompts');

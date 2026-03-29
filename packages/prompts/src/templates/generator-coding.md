@@ -24,12 +24,19 @@
 
 {{RELEVANT_LESSONS}}
 
-## Commit Instructions
+## Commit & Callback Instructions
 
-完成实现后执行以下提交命令：
+完成实现后依次执行以下命令：
 
 ```bash
+# 1. commit + push
 {{GIT_COMMIT_CMD}}
+
+# 2. 通知编排者（替换 <> 内的实际值）
+nexum callback {{TASK_ID}} --project {{PROJECT_DIR}} \
+  --model <当前使用的模型名，如 claude-sonnet-4-6> \
+  --input-tokens <本次对话 input token 数量> \
+  --output-tokens <本次对话 output token 数量>
 ```
 
 ## Completeness Principle
