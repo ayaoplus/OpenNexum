@@ -7,6 +7,7 @@ import { registerTrack } from './commands/track.js';
 import { registerStatus } from './commands/status.js';
 import { registerEval } from './commands/eval.js';
 import { registerComplete } from './commands/complete.js';
+import { registerHealth } from './commands/health.js';
 
 const program = new Command();
 
@@ -22,5 +23,6 @@ registerTrack(program);
 registerStatus(program);
 registerEval(program);
 registerComplete(program);
+registerHealth(program);
 
 program.parse(process.argv);
