@@ -18,13 +18,14 @@ export function formatDispatch(
   progress: string
 ): string {
   return [
-    `🚀 <b>Task Dispatched</b>`,
+    `🚀 派发任务`,
     SEP,
-    `Task: ${taskId} — ${taskName}`,
-    `Agent: ${agentId}`,
-    `Scope files: ${scopeCount}`,
-    `Deliverables: ${deliverablesCount}`,
-    `Progress: ${progress}`,
+    `📋 任务内容: ${taskName}`,
+    `🆔 任务ID: ${taskId}`,
+    `🤖 Agent: ${agentId}`,
+    `📁 Scope: ${scopeCount} 个文件`,
+    `📦 Deliverables: ${deliverablesCount} 项`,
+    `📊 进度: ${progress}`,
     SEP,
   ].join("\n");
 }
@@ -41,17 +42,18 @@ export function formatComplete(
 ): string {
   const unlockedLine =
     unlockedTasks.length > 0
-      ? `Unlocked: ${unlockedTasks.join(", ")}`
-      : "Unlocked: none";
+      ? `🔓 解锁任务: ${unlockedTasks.join(", ")}`
+      : `🔓 解锁任务: 无`;
   return [
-    `✅ <b>Task Complete</b>`,
+    `✅ 任务通过`,
     SEP,
-    `Task: ${taskId} — ${taskName}`,
-    `Elapsed: ${formatElapsed(elapsedMs)}`,
-    `Iteration: ${iteration}`,
-    `Criteria: ${passCount}/${totalCount} passed`,
+    `📋 任务内容: ${taskName}`,
+    `🆔 任务ID: ${taskId}`,
+    `⏱️ 用时: ${formatElapsed(elapsedMs)}`,
+    `🔁 迭代: ${iteration}`,
+    `🎯 Criteria: ${passCount}/${totalCount} 通过`,
     unlockedLine,
-    `Progress: ${progress}`,
+    `📊 进度: ${progress}`,
     SEP,
   ].join("\n");
 }
@@ -71,14 +73,15 @@ export function formatFail(
       ? failedCriteria.map((c) => `  • ${c}`).join("\n")
       : "  (none)";
   return [
-    `❌ <b>Task Failed</b>`,
+    `❌ 任务失败`,
     SEP,
-    `Task: ${taskId} — ${taskName}`,
-    `Iteration: ${iteration}`,
-    `Criteria: ${passCount}/${totalCount} passed, ${failCount} failed`,
-    `Failed criteria:`,
+    `📋 任务内容: ${taskName}`,
+    `🆔 任务ID: ${taskId}`,
+    `🔁 迭代: ${iteration}`,
+    `🎯 Criteria: ${passCount}/${totalCount} 通过，${failCount} 失败`,
+    `💥 失败项:`,
     criteriaLines,
-    `Feedback: ${feedbackExcerpt}`,
+    `💬 Feedback: ${feedbackExcerpt}`,
     SEP,
   ].join("\n");
 }
@@ -94,9 +97,9 @@ export function formatBatchDone(
     })
     .join("\n");
   return [
-    `📦 <b>Batch Done</b> — ${projectName}`,
+    `🎉 批次完成 — ${projectName}`,
     SEP,
-    `Tasks (${tasks.length}):`,
+    `📦 任务列表 (${tasks.length}):`,
     taskLines,
     SEP,
   ].join("\n");
