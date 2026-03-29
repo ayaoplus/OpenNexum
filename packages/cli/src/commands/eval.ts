@@ -2,23 +2,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { parseContract, getTask, updateTask, TaskStatus } from '@nexum/core';
-import type { SpawnOptions, SessionRecord } from '@nexum/spawn';
 import { renderEvaluatorPrompt } from '@nexum/prompts';
+import type { SpawnPayload } from './spawn.js';
 
-// Global mock hook for testing
-const testingGlobals = globalThis as typeof globalThis & {
-  __nexumCliSpawnAcpSession?: (opts: SpawnOptions) => Promise<SessionRecord>;
-};
-
-async function getSpawnFn(): Promise<(opts: SpawnOptions) => Promise<SessionRecord>> {
-  if (testingGlobals.__nexumCliSpawnAcpSession) {
-    return testingGlobals.__nexumCliSpawnAcpSession;
-  }
-  const { spawnAcpSession } = await import('@nexum/spawn');
-  return spawnAcpSession;
-}
-
-export async function runEval(taskId: string, projectDir: string): Promise<void> {
+export async function runEval(taskId: string, projectDir: string): Promise<SpawnPayload> {
   const task = await getTask(projectDir, taskId);
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
@@ -56,29 +43,28 @@ export async function runEval(taskId: string, projectDir: string): Promise<void>
     eval_result_path: evalResultPath,
   });
 
-  const spawnFn = await getSpawnFn();
-  const record = await spawnFn({
+  const label = `nexum-${taskId.toLowerCase()}-eval`;
+
+  return {
     taskId,
+    taskName: contract.name,
     agentId: contract.evaluator,
     promptFile,
+    promptContent,
+    label,
     cwd: projectDir,
-    mode: 'session',
-    label: `nexum-${taskId.toLowerCase()}-eval`,
-  });
-
-  await updateTask(projectDir, taskId, {
-    eval_tmux_session: record.sessionKey,
-  });
+  };
 }
 
 export function registerEval(program: Command): void {
   program
     .command('eval <taskId>')
-    .description('Spawn an evaluator agent for a task')
+    .description('Prepare evaluator task and output spawn payload as JSON')
     .option('--project <dir>', 'Project directory', process.cwd())
     .action(async (taskId: string, options: { project: string }) => {
       try {
-        await runEval(taskId, options.project);
+        const payload = await runEval(taskId, options.project);
+        console.log(JSON.stringify(payload, null, 2));
       } catch (err) {
         console.error('eval failed:', err instanceof Error ? err.message : err);
         process.exit(1);
