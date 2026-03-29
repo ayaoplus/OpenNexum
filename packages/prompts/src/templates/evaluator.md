@@ -17,15 +17,14 @@
 
 ## Output
 
-将结果以 JSON 格式写入：`{{EVAL_RESULT_PATH}}`
+将结果以 YAML 格式写入：`{{EVAL_RESULT_PATH}}`
 
 格式示例：
-```json
-{
-  "verdict": "pass" | "fail",
-  "criteria": [
-    { "id": "C1", "status": "pass" | "fail", "reason": "..." }
-  ],
-  "feedback": "总体评语"
-}
+```yaml
+verdict: pass  # or fail
+criteria:
+  - id: C1
+    status: pass  # or fail
+    reason: "..."
+feedback: "总体评语"
 ```
