@@ -14,6 +14,20 @@ import {
 import type { AgentCli } from '@nexum/core';
 import { renderGeneratorPrompt } from '@nexum/prompts';
 
+// ---------- commit type detection ----------
+
+function detectCommitType(taskName: string): string {
+  const lower = taskName.toLowerCase();
+  if (/\bfix\b|bug|hotfix|修复|修补/.test(lower)) return 'fix';
+  if (/\brefactor|重构/.test(lower)) return 'refactor';
+  if (/\bdocs?|文档|readme|comment/.test(lower)) return 'docs';
+  if (/\btest|测试/.test(lower)) return 'test';
+  if (/\bperf|性能|optimize|优化/.test(lower)) return 'perf';
+  if (/\bci|cd|pipeline|github/.test(lower)) return 'ci';
+  if (/\bchore|杂务/.test(lower)) return 'chore';
+  return 'feat';
+}
+
 export interface SpawnPayload {
   taskId: string;
   taskName: string;
@@ -45,9 +59,13 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     `${taskId}-iter-${iteration}.yaml`
   );
 
+  const type = detectCommitType(contract.name);
+  const scope = taskId.toUpperCase();
+  const commitMsg = `${type}(${scope}): ${taskId}: ${contract.name}`;
   const gitCommitCmd = [
     `git add -- ${contract.scope.files.join(' ')}`,
-    `git commit -m "feat(${taskId.toLowerCase()}): implement ${contract.name}"`,
+    `git commit -m "${commitMsg}"`,
+    `git push -u origin HEAD`,
   ].join(' && ');
 
   const promptContent = renderGeneratorPrompt({
