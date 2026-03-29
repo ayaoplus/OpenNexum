@@ -55,7 +55,9 @@ export interface Task {
   head_commit?: string;
   acp_session_key?: string;
   tmux_session?: string;
+  last_error?: string | null;
   eval_result_path?: string;
+  eval_tmux_session?: string;
   updated_at?: string;
   started_at?: string;
   completed_at?: string;
