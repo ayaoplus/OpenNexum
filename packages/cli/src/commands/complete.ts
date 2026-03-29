@@ -8,8 +8,10 @@ import {
   updateTask,
   TaskStatus,
   getHeadCommit,
+  loadConfig,
+  resolveAgentCli,
 } from '@nexum/core';
-import type { EvalVerdict } from '@nexum/core';
+import type { EvalVerdict, AgentCli } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
 import { formatComplete, formatFail, sendMessage, getChatId, getBotToken } from '@nexum/notify';
 
@@ -18,6 +20,7 @@ export interface RetryPayload {
   taskId: string;
   taskName: string;
   agentId: string;
+  agentCli: AgentCli;
   promptFile: string;
   promptContent: string;
   label: string;
@@ -191,6 +194,8 @@ export async function runComplete(
       ...(baseCommit ? { base_commit: baseCommit } : {}),
     });
 
+    const config = await loadConfig(projectDir);
+    const agentCli = resolveAgentCli(config, contract.generator);
     const label = `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`;
 
     if (chatId && botToken) {
@@ -212,6 +217,7 @@ export async function runComplete(
       taskId,
       taskName: contract.name,
       agentId: contract.generator,
+      agentCli,
       promptFile,
       promptContent,
       label,

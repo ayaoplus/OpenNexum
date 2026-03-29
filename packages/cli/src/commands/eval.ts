@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { parseContract, getTask, updateTask, TaskStatus } from '@nexum/core';
+import { parseContract, getTask, updateTask, TaskStatus, loadConfig, resolveAgentCli } from '@nexum/core';
 import { renderEvaluatorPrompt } from '@nexum/prompts';
 import type { SpawnPayload } from './spawn.js';
 
@@ -43,12 +43,15 @@ export async function runEval(taskId: string, projectDir: string): Promise<Spawn
     eval_result_path: evalResultPath,
   });
 
+  const config = await loadConfig(projectDir);
+  const agentCli = resolveAgentCli(config, contract.evaluator);
   const label = `nexum-${taskId.toLowerCase()}-eval`;
 
   return {
     taskId,
     taskName: contract.name,
     agentId: contract.evaluator,
+    agentCli,
     promptFile,
     promptContent,
     label,

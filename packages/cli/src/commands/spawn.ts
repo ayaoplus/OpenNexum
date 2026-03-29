@@ -8,13 +8,17 @@ import {
   readTasks,
   TaskStatus,
   getHeadCommit,
+  loadConfig,
+  resolveAgentCli,
 } from '@nexum/core';
+import type { AgentCli } from '@nexum/core';
 import { renderGeneratorPrompt } from '@nexum/prompts';
 
 export interface SpawnPayload {
   taskId: string;
   taskName: string;
   agentId: string;
+  agentCli: AgentCli;
   promptFile: string;
   promptContent: string;
   label: string;
@@ -68,12 +72,15 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     iteration,
   });
 
+  const config = await loadConfig(projectDir);
+  const agentCli = resolveAgentCli(config, contract.generator);
   const label = `nexum-${taskId.toLowerCase()}-${contract.generator}`;
 
   return {
     taskId,
     taskName: contract.name,
     agentId: contract.generator,
+    agentCli,
     promptFile,
     promptContent,
     label,
@@ -121,12 +128,15 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     eval_result_path: evalResultPath,
   });
 
+  const config = await loadConfig(projectDir);
+  const agentCli = resolveAgentCli(config, contract.evaluator);
   const label = `nexum-${taskId.toLowerCase()}-eval`;
 
   return {
     taskId,
     taskName: contract.name,
     agentId: contract.evaluator,
+    agentCli,
     promptFile,
     promptContent,
     label,

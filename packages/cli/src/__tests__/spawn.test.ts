@@ -200,3 +200,37 @@ test('runComplete with fail and iteration < max_iterations triggers retry spawn'
   delete testingGlobals.__nexumCliSpawnAcpSession;
   delete testingGlobals.__nexumCliSendMessage;
 });
+
+// ─── C5: config eval→codex mapping is resolved in spawn payload ───
+
+test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', async () => {
+  const taskId = 'TEST-001';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'Test Task',
+      status: 'running',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+      iteration: 0,
+    },
+  ]);
+
+  // Write config mapping 'eval' agent to codex
+  const nexumDir = path.join(projectDir, 'nexum');
+  await writeFile(
+    path.join(nexumDir, 'config.json'),
+    JSON.stringify({ agents: { eval: { cli: 'codex', model: 'gpt-4o' } } }, null, 2),
+    'utf8'
+  );
+
+  testingGlobals.__nexumCliSendMessage = async () => {};
+
+  const { runSpawnEval } = await import(`../commands/spawn.ts?t=${Date.now()}`);
+  const payload = await runSpawnEval(taskId, projectDir);
+
+  assert.equal(payload.agentCli, 'codex', 'agentCli should be codex per config');
+  assert.equal(payload.agentId, 'eval', 'agentId should be contract.evaluator');
+
+  delete testingGlobals.__nexumCliSendMessage;
+});
