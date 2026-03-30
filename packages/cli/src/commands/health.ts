@@ -1,6 +1,9 @@
+import { access } from 'node:fs/promises';
+import path from 'node:path';
 import type { Command } from 'commander';
-import { readTasks, TaskStatus, loadConfig } from '@nexum/core';
-import { getSessionStatus } from '@nexum/spawn';
+import { readTasks, TaskStatus, loadConfig, updateTask } from '@nexum/core';
+import type { Task } from '@nexum/core';
+import { getSessionStatus, spawnAcpSession } from '@nexum/spawn';
 import { sendMessage } from '@nexum/notify';
 import {
   readGlobalConfig,
@@ -9,6 +12,8 @@ import {
   globalConfigPath,
 } from '../lib/global-config.js';
 import { installDaemon, uninstallDaemon, getDaemonStatus } from '../lib/daemon.js';
+import { runCallback } from './callback.js';
+import { runSpawn, runSpawnEval } from './spawn.js';
 
 const DEFAULT_TIMEOUT_MIN = 30;
 
@@ -138,6 +143,70 @@ async function sendAlert(projectDir: string, stuck: StuckTask[]): Promise<void> 
   await sendMessage(target, lines.join('\n'));
 }
 
+async function sendAutomationMessage(projectDir: string, lines: string[]): Promise<void> {
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const target = config.notify?.target;
+  if (!target) return;
+
+  await sendMessage(target, lines.join('\n')).catch(() => {});
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveEvalResultPath(projectDir: string, evalResultPath: string): string {
+  return path.isAbsolute(evalResultPath)
+    ? evalResultPath
+    : path.join(projectDir, evalResultPath);
+}
+
+async function unlockReadyTasks(projectDir: string, completedTaskId: string): Promise<string[]> {
+  const tasks = await readTasks(projectDir);
+  const completedIds = new Set(
+    tasks.filter((task) => task.status === TaskStatus.Done).map((task) => task.id)
+  );
+  completedIds.add(completedTaskId);
+
+  const readyTasks = tasks.filter(
+    (task) =>
+      (task.status === TaskStatus.Blocked || task.status === TaskStatus.Pending) &&
+      task.depends_on.includes(completedTaskId) &&
+      task.depends_on.every((dependencyId) => completedIds.has(dependencyId))
+  );
+
+  for (const task of readyTasks) {
+    if (task.status === TaskStatus.Blocked) {
+      await updateTask(projectDir, task.id, { status: TaskStatus.Pending });
+    }
+  }
+
+  return readyTasks.map((task) => task.id);
+}
+
+function findNextPendingTask(tasks: Task[]): Task | undefined {
+  const completedIds = new Set(
+    tasks.filter((task) => task.status === TaskStatus.Done).map((task) => task.id)
+  );
+
+  return tasks.find(
+    (task) =>
+      task.status === TaskStatus.Pending &&
+      task.depends_on.every((dependencyId) => completedIds.has(dependencyId))
+  );
+}
+
+function warnAutomation(projectDir: string, step: string, taskId: string, err: unknown): void {
+  console.warn(
+    `[${new Date().toLocaleTimeString()}] ⚠️  [${projectDir}] ${step} ${taskId} 失败: ${err instanceof Error ? err.message : err}`
+  );
+}
+
 // ---------- watch loop (polls all global projects) ----------
 
 export async function runWatch(opts: { intervalMin?: number; timeoutMin?: number } = {}): Promise<void> {
@@ -145,6 +214,9 @@ export async function runWatch(opts: { intervalMin?: number; timeoutMin?: number
   const intervalMin = opts.intervalMin ?? globalCfg.watch.intervalMin;
   const timeoutMin = opts.timeoutMin ?? globalCfg.watch.timeoutMin;
   const intervalMs = intervalMin * 60_000;
+  const handledGeneratorDone = new Set<string>();
+  const handledEvaluatorResults = new Set<string>();
+  const handledDoneTasks = new Set<string>();
 
   console.log(`👀 nexum watch 启动 (检查间隔: ${intervalMin}min，卡死阈值: ${timeoutMin}min)`);
   console.log(`📋 全局配置: ${globalConfigPath()}`);
@@ -169,6 +241,117 @@ export async function runWatch(opts: { intervalMin?: number; timeoutMin?: number
           console.log(`${tag} ⚠️  ${result.stuck.length} 个卡死任务，已发通知`);
         } else if (result.checked > 0) {
           console.log(`${tag} ✅ ${result.checked} 个活跃任务正常`);
+        }
+
+        const generatorDoneTasks = (await readTasks(projectDir)).filter(
+          (task) => task.status === TaskStatus.GeneratorDone
+        );
+        for (const task of generatorDoneTasks) {
+          const key = `${projectDir}:${task.id}:${task.iteration ?? 0}`;
+          if (handledGeneratorDone.has(key)) {
+            continue;
+          }
+
+          try {
+            const payload = await runSpawnEval(task.id, projectDir);
+            const session = await (async () => {
+              try {
+                return await spawnAcpSession({ ...payload, mode: 'run' });
+              } catch (error) {
+                await updateTask(projectDir, task.id, { status: TaskStatus.GeneratorDone });
+                throw error;
+              }
+            })();
+
+            handledGeneratorDone.add(key);
+            await sendAutomationMessage(projectDir, [
+              '⚙️ Watch 自动启动 evaluator',
+              '━━━━━━━━━━━━━━━',
+              `📋 任务内容: ${task.name}`,
+              `🆔 任务ID: ${task.id}`,
+              `🤖 Evaluator: ${payload.agentId}`,
+              `🔑 Session: ${session.sessionKey}`,
+            ]);
+          } catch (err) {
+            warnAutomation(projectDir, '自动启动 evaluator', task.id, err);
+          }
+        }
+
+        const evaluatingTasks = (await readTasks(projectDir)).filter(
+          (task) => task.status === TaskStatus.Evaluating && !!task.eval_result_path
+        );
+        for (const task of evaluatingTasks) {
+          const evalResultPath = resolveEvalResultPath(projectDir, task.eval_result_path!);
+          if (!(await fileExists(evalResultPath))) {
+            continue;
+          }
+
+          const key = `${projectDir}:${task.id}:${task.iteration ?? 0}:${evalResultPath}`;
+          if (handledEvaluatorResults.has(key)) {
+            continue;
+          }
+
+          try {
+            await runCallback(task.id, { project: projectDir, role: 'evaluator' });
+            handledEvaluatorResults.add(key);
+            await sendAutomationMessage(projectDir, [
+              '⚙️ Watch 自动处理 evaluator 结果',
+              '━━━━━━━━━━━━━━━',
+              `📋 任务内容: ${task.name}`,
+              `🆔 任务ID: ${task.id}`,
+              `📄 Eval: ${evalResultPath}`,
+            ]);
+          } catch (err) {
+            warnAutomation(projectDir, '自动处理 evaluator 结果', task.id, err);
+          }
+        }
+
+        const completedTasks = (await readTasks(projectDir)).filter(
+          (task) => task.status === TaskStatus.Done
+        );
+        for (const task of completedTasks) {
+          const key = `${projectDir}:${task.id}`;
+          if (handledDoneTasks.has(key)) {
+            continue;
+          }
+
+          try {
+            const unlockedTaskIds = await unlockReadyTasks(projectDir, task.id);
+            const nextPendingTask = findNextPendingTask(await readTasks(projectDir));
+            let spawnedTaskId: string | null = null;
+            let sessionKey: string | null = null;
+
+            if (nextPendingTask) {
+              const payload = await runSpawn(nextPendingTask.id, projectDir);
+              const session = await (async () => {
+                try {
+                  return await spawnAcpSession({ ...payload, mode: 'run' });
+                } catch (error) {
+                  await updateTask(projectDir, nextPendingTask.id, { status: TaskStatus.Pending });
+                  throw error;
+                }
+              })();
+
+              spawnedTaskId = payload.taskId;
+              sessionKey = session.sessionKey;
+            }
+
+            handledDoneTasks.add(key);
+
+            if (unlockedTaskIds.length > 0 || spawnedTaskId) {
+              await sendAutomationMessage(projectDir, [
+                '⚙️ Watch 自动推进下游任务',
+                '━━━━━━━━━━━━━━━',
+                `📋 已完成任务: ${task.name}`,
+                `🆔 任务ID: ${task.id}`,
+                `🔓 解锁任务: ${unlockedTaskIds.length > 0 ? unlockedTaskIds.join(', ') : 'none'}`,
+                `🚀 启动任务: ${spawnedTaskId ?? 'none'}`,
+                ...(sessionKey ? [`🔑 Session: ${sessionKey}`] : []),
+              ]);
+            }
+          } catch (err) {
+            warnAutomation(projectDir, '自动推进下游任务', task.id, err);
+          }
         }
       } catch (err) {
         console.warn(

@@ -1,5 +1,6 @@
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { SessionRecord, SpawnOptions } from "./types.js";
 
@@ -79,7 +80,9 @@ export async function spawnAcpSession(options: SpawnOptions): Promise<SessionRec
   }
 
   const sessionKey = parseSessionKey(result.stdout);
-  await updateActiveTaskSessionKey(options.cwd, options.taskId, sessionKey, startedAt);
+  const projectDir = await resolveProjectDir(options.cwd);
+  await updateActiveTaskSessionKey(projectDir, options.taskId, sessionKey, startedAt);
+  await runTrack(projectDir, options.taskId, sessionKey);
 
   return {
     taskId: options.taskId,
@@ -131,12 +134,11 @@ function pickSessionKey(record: Record<string, unknown>): string | undefined {
 }
 
 async function updateActiveTaskSessionKey(
-  startDir: string,
+  projectDir: string,
   taskId: string,
   sessionKey: string,
   updatedAt: string
 ): Promise<void> {
-  const projectDir = await resolveProjectDir(startDir);
   const filePath = path.join(projectDir, ACTIVE_TASKS_RELATIVE_PATH);
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const payload = await readActiveTasks(filePath);
@@ -156,6 +158,22 @@ async function updateActiveTaskSessionKey(
   } catch (error) {
     await rm(temporaryPath, { force: true });
     throw error;
+  }
+}
+
+async function runTrack(projectDir: string, taskId: string, sessionKey: string): Promise<void> {
+  const cliEntryPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../cli/dist/index.js"
+  );
+  const result = await (await getExecaRunner())(
+    process.execPath,
+    [cliEntryPath, "track", taskId, sessionKey, "--project", projectDir],
+    { reject: false }
+  );
+
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || "Failed to run nexum track.");
   }
 }
 

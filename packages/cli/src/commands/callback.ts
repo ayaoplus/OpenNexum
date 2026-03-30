@@ -1,12 +1,25 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { Command } from 'commander';
-import { getTask, updateTask, TaskStatus, loadConfig, getHeadCommit } from '@nexum/core';
+import {
+  getTask,
+  updateTask,
+  TaskStatus,
+  loadConfig,
+  getHeadCommit,
+  parseContract,
+  type EvalVerdict,
+} from '@nexum/core';
 import { sendMessage } from '@nexum/notify';
+import { spawnAcpSession } from '@nexum/spawn';
+import { runComplete } from './complete.js';
 
 interface CallbackOptions {
   project: string;
   model?: string;
   inputTokens?: string;
   outputTokens?: string;
+  role?: 'generator' | 'evaluator';
 }
 
 function formatTokens(n: number): string {
@@ -14,6 +27,21 @@ function formatTokens(n: number): string {
 }
 
 export async function runCallback(taskId: string, options: CallbackOptions): Promise<void> {
+  const role = options.role ?? 'generator';
+
+  if (role !== 'generator' && role !== 'evaluator') {
+    throw new Error(`Invalid role: ${role}. Must be generator or evaluator.`);
+  }
+
+  if (role === 'generator') {
+    await runGeneratorCallback(taskId, options);
+    return;
+  }
+
+  await runEvaluatorCallback(taskId, options);
+}
+
+async function runGeneratorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
 
   const task = await getTask(projectDir, taskId);
@@ -80,11 +108,80 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
   }));
 }
 
+async function runEvaluatorCallback(taskId: string, options: CallbackOptions): Promise<void> {
+  const projectDir = options.project;
+  const task = await getTask(projectDir, taskId);
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  if (!task.eval_result_path) {
+    throw new Error(`Task ${taskId} has no eval_result_path`);
+  }
+
+  const contractAbsPath = path.isAbsolute(task.contract_path)
+    ? task.contract_path
+    : path.join(projectDir, task.contract_path);
+  const contract = await parseContract(contractAbsPath);
+  const evalResultPath = path.isAbsolute(task.eval_result_path)
+    ? task.eval_result_path
+    : path.join(projectDir, task.eval_result_path);
+  const verdict = await readEvalVerdict(evalResultPath);
+  const iteration = task.iteration ?? 0;
+
+  const completeResult =
+    verdict === 'pass'
+      ? await runComplete(taskId, 'pass', projectDir)
+      : verdict === 'fail' && iteration < contract.max_iterations
+      ? await runComplete(taskId, 'fail', projectDir)
+      : await runComplete(taskId, 'escalated', projectDir);
+
+  let sessionKey: string | null = null;
+  if (completeResult.action === 'retry' && completeResult.retryPayload) {
+    try {
+      const session = await spawnAcpSession({
+        ...completeResult.retryPayload,
+        mode: 'run',
+      });
+      sessionKey = session.sessionKey;
+    } catch (error) {
+      await updateTask(projectDir, taskId, {
+        status: TaskStatus.Evaluating,
+        iteration,
+        eval_result_path: task.eval_result_path,
+      });
+      throw error;
+    }
+  }
+
+  console.log(JSON.stringify({
+    ok: true,
+    taskId,
+    role: 'evaluator',
+    verdict,
+    action: completeResult.action,
+    sessionKey,
+  }));
+}
+
+async function readEvalVerdict(evalResultPath: string): Promise<EvalVerdict> {
+  const content = await readFile(evalResultPath, 'utf8');
+  const match = content.match(/^\s*verdict:\s*(pass|fail|escalated)\s*(?:#.*)?$/m);
+  const verdict = match?.[1] as EvalVerdict | undefined;
+
+  if (!verdict) {
+    throw new Error(`Unable to parse verdict from ${evalResultPath}`);
+  }
+
+  return verdict;
+}
+
 export function registerCallback(program: Command): void {
   program
     .command('callback <taskId>')
-    .description('Mark generator completion and send callback notification')
+    .description('Process generator/evaluator callback and send notification')
     .option('--project <dir>', 'Project directory', process.cwd())
+    .option('--role <role>', 'Callback role: generator | evaluator', 'generator')
     .option('--model <name>', 'Model used by generator (e.g. claude-sonnet-4-6)')
     .option('--input-tokens <n>', 'Input token count consumed by generator')
     .option('--output-tokens <n>', 'Output token count consumed by generator')
