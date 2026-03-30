@@ -1,13 +1,16 @@
 export * from "./types.js";
 export { sendMessage } from "./telegram.js";
 export {
-  formatBatchDone,
-  formatComplete,
-  formatDispatch,
-  formatDispatchNotification,
-  formatEscalation,
-  formatFail,
-  formatGeneratorComplete,
-  formatReviewFailed,
+  // Primary names (use these)
+  formatGeneratorDone,
   formatReviewPassed,
+  formatReviewFailed,
+  formatEscalation,
+  formatBatchDone,
+  // Aliases (backward compat, prefer primary names above)
+  formatComplete,
+  formatFail,
+  formatDispatch,
+  formatGeneratorComplete,
+  formatDispatchNotification,
 } from "./templates.js";

@@ -1,26 +1,39 @@
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { SessionRecord, SpawnOptions } from "./types.js";
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const ACTIVE_TASKS_RELATIVE_PATH = path.join("nexum", "active-tasks.json");
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
 type AgentCliName = "claude" | "codex";
+
 type ExecaResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
 };
+
 type ExecaRunner = (
   command: string,
   args: string[],
-  options: { reject: false }
+  options: { reject: false; cwd?: string }
 ) => Promise<ExecaResult>;
+
 const testingGlobals = globalThis as typeof globalThis & {
   __nexumSpawnExeca?: ExecaRunner;
 };
+
 let cachedExecaRunner: ExecaRunner | undefined;
-const loadExecaModule = new Function("return import('execa')") as () => Promise<{ execa: ExecaRunner }>;
+
+const loadExecaModule = new Function(
+  "return import('execa')"
+) as () => Promise<{ execa: ExecaRunner }>;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 interface ActiveTask {
   id: string;
@@ -33,105 +46,142 @@ interface ActiveTasksFile {
   tasks: ActiveTask[];
 }
 
-export function buildPromptArgs(
-  promptFilePath: string,
-  agentId: string,
-  cliName: AgentCliName
-): string[] {
-  return ["acpx", "-s", agentId, "--ttl", "0", "--approve-all", cliName, "exec", "-f", promptFilePath];
-}
-
-function resolveCliName(options: SpawnOptions): AgentCliName {
-  const agentCli = (options as SpawnOptions & { agentCli?: AgentCliName }).agentCli;
-
-  if (agentCli === "claude" || agentCli === "codex") {
-    return agentCli;
+/**
+ * Resolve CLI name from agentId prefix.
+ * codex-* → codex, claude-* → claude, default → codex
+ */
+export function resolveCliName(agentId: string, explicitCli?: string): AgentCliName {
+  if (explicitCli === "claude" || explicitCli === "codex") {
+    return explicitCli;
   }
-
-  if (options.agentId.startsWith("claude-")) {
-    return "claude";
-  }
-
+  if (agentId.startsWith("claude-")) return "claude";
   return "codex";
 }
 
+// ─── Core: spawn ACP session via acpx ────────────────────────────────────────
+
+/**
+ * Spawn an ACP coding agent session directly via acpx.
+ *
+ * Command:
+ *   acpx --approve-all --ttl 0 <cliName> -s <sessionName> exec -f <promptFile>
+ *
+ * Where:
+ *   - cliName = "codex" | "claude" (resolved from agentId)
+ *   - sessionName = agentId (e.g. "codex-gen-01", "claude-eval-NEXUM-011")
+ *   - promptFile = path to the generated prompt markdown
+ *   - --ttl 0 prevents idle timeout killing the session
+ *   - --approve-all auto-approves all permission requests
+ *   - exec = one-shot mode (no persistent session)
+ */
 export async function spawnAcpSession(options: SpawnOptions): Promise<SessionRecord> {
   const startedAt = new Date().toISOString();
-  const cliName = resolveCliName(options);
-  const args = [
-    "sessions",
-    "spawn",
-    "--runtime",
-    "acp",
-    "--agent",
+  const cliName = resolveCliName(
     options.agentId,
-    "--mode",
-    options.mode,
-    "--cwd",
-    options.cwd,
-    "--label",
-    options.label,
-    ...buildPromptArgs(options.promptFile, options.agentId, cliName)
-  ];
-  const result = await (await getExecaRunner())("openclaw", args, { reject: false });
+    (options as SpawnOptions & { agentCli?: string }).agentCli
+  );
 
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr || result.stdout || "Failed to spawn ACP session.");
+  // Step 1: Ensure named session exists
+  //   acpx <cliName> sessions ensure --name <agentId>
+  const ensureArgs = [cliName, "sessions", "ensure", "--name", options.agentId];
+  const ensureResult = await (await getExecaRunner())("acpx", ensureArgs, {
+    reject: false,
+    cwd: options.cwd,
+  });
+
+  // Ignore ensure failure — session may already exist, or `ensure` may not be supported
+  if (ensureResult.exitCode !== 0) {
+    // Try `sessions new` as fallback (some acpx versions don't have ensure)
+    const newArgs = [cliName, "sessions", "new", "--name", options.agentId];
+    await (await getExecaRunner())("acpx", newArgs, {
+      reject: false,
+      cwd: options.cwd,
+    });
   }
 
-  const sessionKey = parseSessionKey(result.stdout);
+  // Step 2: Send prompt to the session
+  //   acpx --approve-all --ttl 0 <cliName> -s <agentId> -f <promptFile> --no-wait
+  const args = [
+    "--approve-all",
+    "--ttl", "0",
+    cliName,
+    "-s", options.agentId,
+    "-f", options.promptFile,
+    "--no-wait",
+  ];
+
+  const result = await (await getExecaRunner())("acpx", args, {
+    reject: false,
+    cwd: options.cwd,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `acpx spawn failed (exit ${result.exitCode}): ${result.stderr || result.stdout || "no output"}`
+    );
+  }
+
+  // Parse session key from acpx output
+  const sessionKey = parseSessionKey(result.stdout, options.agentId);
+
+  // Step 3: Update active-tasks.json
   const projectDir = await resolveProjectDir(options.cwd);
   await updateActiveTaskSessionKey(projectDir, options.taskId, sessionKey, startedAt);
-  await runTrack(projectDir, options.taskId, sessionKey);
 
   return {
     taskId: options.taskId,
     sessionKey,
     agentId: options.agentId,
     startedAt,
-    status: "running"
+    status: "running",
   };
 }
 
-function parseSessionKey(output: string): string {
+// ─── Output Parsing ──────────────────────────────────────────────────────────
+
+function parseSessionKey(output: string, fallbackAgentId: string): string {
   if (!output.trim()) {
-    throw new Error("OpenClaw spawn command returned no output.");
+    // acpx --no-wait may not output a session key, use agentId as fallback
+    return fallbackAgentId;
   }
 
+  // Try JSON parse first
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const value = pickSessionKey(parsed);
-
-    if (value) {
-      return value;
-    }
+    if (value) return value;
   } catch {
-    // Fall back to text parsing because some CLI builds print banners/log lines.
+    // Not JSON, try text patterns
   }
 
-  const match = output.match(
-    /"(?:childSessionKey|sessionKey|key)"\s*:\s*"([^"]+)"|(?:childSessionKey|sessionKey|key)\s*[:=]\s*([^\s]+)/m
+  // Try common patterns from acpx output
+  // e.g. "[acpx] session codex-gen-01 (UUID) · ..."
+  const uuidMatch = output.match(
+    /\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)/
   );
-  const sessionKey = match?.[1] ?? match?.[2];
+  if (uuidMatch?.[1]) return uuidMatch[1];
 
-  if (!sessionKey) {
-    throw new Error(`Unable to parse session key from OpenClaw output: ${output}`);
-  }
+  // e.g. "[queued] UUID"
+  const queuedMatch = output.match(
+    /\[queued\]\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/
+  );
+  if (queuedMatch?.[1]) return queuedMatch[1];
 
-  return sessionKey.trim();
+  // Fallback: use agentId
+  return fallbackAgentId;
 }
 
 function pickSessionKey(record: Record<string, unknown>): string | undefined {
-  for (const key of ["childSessionKey", "sessionKey", "key"]) {
+  for (const key of ["childSessionKey", "sessionKey", "key", "id"]) {
     const value = record[key];
-
     if (typeof value === "string" && value.trim()) {
       return value.trim();
     }
   }
-
   return undefined;
 }
+
+// ─── Active Tasks File ───────────────────────────────────────────────────────
 
 async function updateActiveTaskSessionKey(
   projectDir: string,
@@ -145,7 +195,9 @@ async function updateActiveTaskSessionKey(
   const task = payload.tasks.find((entry) => entry.id === taskId);
 
   if (!task) {
-    throw new Error(`Task not found in active-tasks.json: ${taskId}`);
+    // Don't throw — task might not be registered yet (e.g. auto-dispatched downstream)
+    console.warn(`[spawn] Task not found in active-tasks.json: ${taskId}, skipping session key update`);
+    return;
   }
 
   task.acp_session_key = sessionKey;
@@ -158,22 +210,6 @@ async function updateActiveTaskSessionKey(
   } catch (error) {
     await rm(temporaryPath, { force: true });
     throw error;
-  }
-}
-
-async function runTrack(projectDir: string, taskId: string, sessionKey: string): Promise<void> {
-  const cliEntryPath = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../cli/dist/index.js"
-  );
-  const result = await (await getExecaRunner())(
-    process.execPath,
-    [cliEntryPath, "track", taskId, sessionKey, "--project", projectDir],
-    { reject: false }
-  );
-
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr || result.stdout || "Failed to run nexum track.");
   }
 }
 
@@ -197,15 +233,15 @@ async function resolveProjectDir(startDir: string): Promise<string> {
       return currentDir;
     } catch {
       const parentDir = path.dirname(currentDir);
-
       if (parentDir === currentDir) {
         return path.resolve(startDir);
       }
-
       currentDir = parentDir;
     }
   }
 }
+
+// ─── Execa Loader ────────────────────────────────────────────────────────────
 
 async function getExecaRunner(): Promise<ExecaRunner> {
   if (testingGlobals.__nexumSpawnExeca) {

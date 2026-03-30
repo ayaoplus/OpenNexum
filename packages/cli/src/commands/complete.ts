@@ -13,11 +13,7 @@ import {
 } from '@nexum/core';
 import type { EvalVerdict, AgentCli } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
-import {
-  formatEscalation,
-  formatFail,
-  sendMessage,
-} from '@nexum/notify';
+// Notifications are handled by callback.ts, not here
 import { archiveDoneTasks } from '../lib/archive.js';
 
 export interface RetryPayload {

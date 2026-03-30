@@ -14,13 +14,17 @@ import {
   type EvalVerdict,
 } from '@nexum/core';
 import {
+  formatGeneratorDone,
   formatComplete,
-  formatGeneratorComplete as formatGeneratorDone,
+  formatReviewFailed,
+  formatEscalation,
   sendMessage,
 } from '@nexum/notify';
 import { spawnAcpSession } from '@nexum/spawn';
 import { runComplete } from './complete.js';
 import { runSpawn, runSpawnEval } from './spawn.js';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface CallbackOptions {
   project: string;
@@ -30,67 +34,64 @@ interface CallbackOptions {
   role?: 'generator' | 'evaluator';
 }
 
+// ─── Entry Point ─────────────────────────────────────────────────────────────
+
 export async function runCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const role = options.role ?? 'generator';
 
-  if (role !== 'generator' && role !== 'evaluator') {
-    throw new Error(`Invalid role: ${role}. Must be generator or evaluator.`);
-  }
-
   if (role === 'generator') {
     await runGeneratorCallback(taskId, options);
-    return;
+  } else if (role === 'evaluator') {
+    await runEvaluatorCallback(taskId, options);
+  } else {
+    throw new Error(`Invalid role: ${role}. Must be generator or evaluator.`);
   }
-
-  await runEvaluatorCallback(taskId, options);
 }
+
+// ─── Generator Callback ──────────────────────────────────────────────────────
+//
+// Called when a generator (coding agent) finishes its work.
+// Steps:
+//   1. Update task status → generator_done
+//   2. Send notification (code submitted)
+//   3. Auto-dispatch evaluator (best-effort)
 
 async function runGeneratorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
-
   const task = await getTask(projectDir, taskId);
-  if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
-  }
-  const contractAbsPath = path.isAbsolute(task.contract_path)
-    ? task.contract_path
-    : path.join(projectDir, task.contract_path);
-  const contract = await parseContract(contractAbsPath);
+  if (!task) throw new Error(`Task not found: ${taskId}`);
 
-  // Parse token / model info
+  const contract = await loadContract(projectDir, task.contract_path);
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined }));
+
+  // Parse optional metadata from generator
   const model = options.model?.trim() || '';
   const inputTokens = parseInt(options.inputTokens ?? '0', 10) || 0;
   const outputTokens = parseInt(options.outputTokens ?? '0', 10) || 0;
 
-  // Check whether generator actually committed (HEAD should differ from base_commit)
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined }));
-  const hasRemote = !!(config.git?.remote);
+  // Check commit status
   const currentHead = await getHeadCommit(projectDir).catch(() => '');
-  // Only flag commitMissing when a remote is configured (push is expected)
-  const commitMissing = hasRemote
-    && task.base_commit
-    && currentHead
-    && currentHead === task.base_commit;
+  const hasRemote = !!(config.git?.remote);
+  const commitMissing = hasRemote && task.base_commit && currentHead && currentHead === task.base_commit;
 
-  // Update task status to GeneratorDone
+  // ── Step 1: Update status ──
   await updateTask(projectDir, taskId, {
     status: TaskStatus.GeneratorDone,
     ...(currentHead ? { commit_hash: currentHead } : {}),
   });
 
-  // Send Telegram notification
+  // ── Step 2: Notify ──
   const target = config.notify?.target;
-
   if (target) {
-    const lines = commitMissing
+    const msg = commitMissing
       ? [
           '⚠️ Generator 完成，但未检测到新 commit！',
           '━━━━━━━━━━━━━━━',
-          `📋 任务内容: ${task.name}`,
-          `🆔 任务ID: ${taskId}`,
-          `📍 HEAD 仍为: \`${currentHead.slice(0, 7)}\`（与 base_commit 相同）`,
+          `📋 任务: ${task.name}`,
+          `🆔 ID: ${taskId}`,
+          `📍 HEAD: \`${currentHead.slice(0, 7)}\`（与 base_commit 相同）`,
           '❗ 请检查 generator 是否执行了 git commit + push',
-        ]
+        ].join('\n')
       : formatGeneratorDone(taskId, task.name, contract.generator, {
           model,
           inputTokens,
@@ -98,192 +99,221 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
           commitHash: currentHead,
           iteration: task.iteration,
           scopeFiles: contract.scope.files,
-        }).split('\n');
+        });
 
-    await sendMessage(target, lines.join('\n'));
+    await sendMessage(target, msg).catch(() => {});
   }
 
+  // ── Step 3: Auto-dispatch evaluator ──
   try {
     const evalPayload = await runSpawnEval(taskId, projectDir);
-    const evaluatorSessionName = `claude-eval-${taskId}`;
+    const evalSessionName = `claude-eval-${taskId}`;
     const session = await spawnAcpSession({
       ...evalPayload,
-      agentId: evaluatorSessionName,
+      agentId: evalSessionName,
       mode: 'run',
     });
-    await updateTask(projectDir, taskId, {
-      acp_session_key: session.sessionKey,
-    });
-  } catch (error) {
-    console.warn(
-      `callback generator auto-dispatch evaluator failed for ${taskId}: ${error instanceof Error ? error.message : error}`
-    );
+    console.log(`[callback] auto-dispatched evaluator ${evalSessionName}: ${session.sessionKey}`);
+  } catch (err) {
+    console.warn(`[callback] auto-dispatch evaluator failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
   }
 
-  console.log(JSON.stringify({
-    ok: true,
-    taskId,
-    status: TaskStatus.GeneratorDone,
-    commitMissing: !!commitMissing,
-    model,
-    inputTokens,
-    outputTokens,
-  }));
+  console.log(JSON.stringify({ ok: true, taskId, status: 'generator_done', commitMissing: !!commitMissing, model, inputTokens, outputTokens }));
 }
+
+// ─── Evaluator Callback ──────────────────────────────────────────────────────
+//
+// Called when an evaluator finishes reviewing code.
+// Steps:
+//   1. Read eval result (pass/fail/escalated)
+//   2. Run complete → updates status, triggers retry/unlock
+//   3. Send notification (appropriate for verdict)
+//   4. Auto-dispatch next step (retry generator or next pending task)
 
 async function runEvaluatorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
   const task = await getTask(projectDir, taskId);
-  if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
-  }
+  if (!task) throw new Error(`Task not found: ${taskId}`);
+  if (!task.eval_result_path) throw new Error(`Task ${taskId} has no eval_result_path`);
 
-  if (!task.eval_result_path) {
-    throw new Error(`Task ${taskId} has no eval_result_path`);
-  }
+  const contract = await loadContract(projectDir, task.contract_path);
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const target = config.notify?.target;
 
-  const contractAbsPath = path.isAbsolute(task.contract_path)
-    ? task.contract_path
-    : path.join(projectDir, task.contract_path);
-  const contract = await parseContract(contractAbsPath);
-  const evalResultPath = path.isAbsolute(task.eval_result_path)
-    ? task.eval_result_path
-    : path.join(projectDir, task.eval_result_path);
+  const evalResultPath = resolvePath(projectDir, task.eval_result_path);
   const verdict = await readEvalVerdict(evalResultPath);
   const evalSummary = await readEvalSummary(evalResultPath);
   const iteration = task.iteration ?? 0;
   const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
+  const elapsedMs = Date.now() - startedAt;
 
-  const completeResult =
-    verdict === 'pass'
-      ? await runComplete(taskId, 'pass', projectDir)
-      : verdict === 'fail' && iteration < contract.max_iterations
-      ? await runComplete(taskId, 'fail', projectDir)
-      : await runComplete(taskId, 'escalated', projectDir);
+  // ── Step 1+2: Run complete (status update + unlock/retry/escalate) ──
+  const result = await runComplete(taskId, verdict, projectDir);
 
-  let sessionKey: string | null = null;
-  if (completeResult.action === 'retry' && completeResult.retryPayload) {
-    try {
-      const session = await spawnAcpSession({
-        ...completeResult.retryPayload,
-        mode: 'run',
-      });
-      sessionKey = session.sessionKey;
-    } catch (error) {
-      await updateTask(projectDir, taskId, {
-        status: TaskStatus.Evaluating,
-        iteration,
-        eval_result_path: task.eval_result_path,
-      });
-      throw error;
-    }
-  }
-
-  if (completeResult.action === 'done') {
-    const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
-    const target = config.notify?.target;
-
-    if (target) {
+  // ── Step 3: Notify (covers ALL scenarios) ──
+  if (target) {
+    if (result.action === 'done') {
+      // ✅ Pass
       const tasks = await readTasks(projectDir);
-      const overallDone = tasks.filter((item) => item.status === TaskStatus.Done).length;
+      const overallDone = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const activeBatch = await getActiveBatch(projectDir);
       const batchProgress = activeBatch ? await getBatchProgress(projectDir, activeBatch) : null;
-      const msg = formatComplete(
-        taskId,
-        contract.name,
-        Date.now() - startedAt,
-        iteration,
-        evalSummary.passCount,
-        evalSummary.totalCount,
-        completeResult.unlockedTasks ?? [],
-        `${overallDone}/${tasks.length}`,
-        {
-          evaluatorName: contract.evaluator,
-          batchProgress: batchProgress
-            ? `${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}`
-            : undefined,
-        }
-      );
+      const progressStr = batchProgress
+        ? `${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}  |  总体: ${overallDone}/${tasks.length}`
+        : `${overallDone}/${tasks.length}`;
+
+      const msg = formatComplete(taskId, contract.name, elapsedMs, iteration,
+        evalSummary.passCount, evalSummary.totalCount,
+        result.unlockedTasks ?? [], progressStr,
+        { evaluatorName: contract.evaluator });
       await sendMessage(target, msg).catch(() => {});
-    }
 
-    try {
-      const tasks = await readTasks(projectDir);
-      const unlockedPendingTasks = tasks.filter(
-        (item) =>
-          item.status === TaskStatus.Pending &&
-          (completeResult.unlockedTasks ?? []).includes(item.id)
-      );
+    } else if (result.action === 'retry') {
+      // ❌ Fail → retry
+      const msg = formatReviewFailed(taskId, contract.name, iteration,
+        evalSummary.passCount, evalSummary.totalCount,
+        evalSummary.criteriaResults, evalSummary.feedback,
+        { evaluatorName: contract.evaluator, autoRetryHint: `自动重试中，第${(iteration + 2)}次迭代` });
+      await sendMessage(target, msg).catch(() => {});
 
-      for (const unlockedTask of unlockedPendingTasks) {
-        try {
-          const generatorPayload = await runSpawn(unlockedTask.id, projectDir);
-          const generatorSessionName = `codex-gen-${unlockedTask.id}`;
-          const session = await spawnAcpSession({
-            ...generatorPayload,
-            agentId: generatorSessionName,
-            mode: 'run',
-          });
-          await updateTask(projectDir, unlockedTask.id, {
-            acp_session_key: session.sessionKey,
-          });
-        } catch (error) {
-          console.warn(
-            `callback evaluator auto-dispatch generator failed for ${unlockedTask.id}: ${error instanceof Error ? error.message : error}`
-          );
-        }
-      }
-    } catch (error) {
-      console.warn(
-        `callback evaluator next-task dispatch failed for ${taskId}: ${error instanceof Error ? error.message : error}`
-      );
+    } else if (result.action === 'escalated') {
+      // 🚨 Escalated
+      const history = evalSummary.criteriaResults.length > 0
+        ? [{ iteration, feedback: evalSummary.feedback, criteriaResults: evalSummary.criteriaResults }]
+        : [];
+      const msg = formatEscalation(taskId, contract.name, history,
+        `nexum retry ${taskId} --force`,
+        { evaluatorName: contract.evaluator });
+      await sendMessage(target, msg).catch(() => {});
     }
   }
 
-  console.log(JSON.stringify({
-    ok: true,
-    taskId,
-    role: 'evaluator',
-    verdict,
-    action: completeResult.action,
-    sessionKey,
-  }));
+  // ── Step 4: Auto-dispatch next step ──
+  if (result.action === 'retry' && result.retryPayload) {
+    try {
+      const session = await spawnAcpSession({ ...result.retryPayload, mode: 'run' });
+      console.log(`[callback] auto-dispatched retry generator: ${session.sessionKey}`);
+    } catch (err) {
+      console.warn(`[callback] auto-dispatch retry failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (result.action === 'done') {
+    await autoDispatchUnlockedTasks(projectDir, result.unlockedTasks ?? []);
+  }
+
+  console.log(JSON.stringify({ ok: true, taskId, role: 'evaluator', verdict, action: result.action }));
+}
+
+// ─── Auto-dispatch Helpers ───────────────────────────────────────────────────
+
+async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string[]): Promise<void> {
+  if (unlockedIds.length === 0) return;
+
+  const tasks = await readTasks(projectDir);
+
+  for (const id of unlockedIds) {
+    const task = tasks.find((t) => t.id === id && t.status === TaskStatus.Pending);
+    if (!task) continue;
+
+    try {
+      const payload = await runSpawn(id, projectDir);
+      const sessionName = `codex-gen-${id}`;
+      const session = await spawnAcpSession({ ...payload, agentId: sessionName, mode: 'run' });
+      console.log(`[callback] auto-dispatched next generator ${sessionName}: ${session.sessionKey}`);
+    } catch (err) {
+      console.warn(`[callback] auto-dispatch generator failed for ${id}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+
+// ─── Eval YAML Parsing (unified) ─────────────────────────────────────────────
+
+interface CriterionResult {
+  id: string;
+  passed: boolean;
+  reason: string;
+}
+
+interface EvalSummary {
+  feedback: string;
+  passCount: number;
+  totalCount: number;
+  criteriaResults: CriterionResult[];
 }
 
 async function readEvalVerdict(evalResultPath: string): Promise<EvalVerdict> {
   const content = await readFile(evalResultPath, 'utf8');
   const match = content.match(/^\s*verdict:\s*(pass|fail|escalated)\s*(?:#.*)?$/m);
-  const verdict = match?.[1] as EvalVerdict | undefined;
+  if (!match?.[1]) throw new Error(`Unable to parse verdict from ${evalResultPath}`);
+  return match[1] as EvalVerdict;
+}
 
-  if (!verdict) {
-    throw new Error(`Unable to parse verdict from ${evalResultPath}`);
+async function readEvalSummary(evalResultPath: string): Promise<EvalSummary> {
+  try {
+    const content = await readFile(evalResultPath, 'utf8');
+    const feedback = parseYamlScalar(content.match(/^feedback:\s*(.+)$/m)?.[1]);
+    const criteriaResults: CriterionResult[] = [];
+
+    const criteriaBlocks = content.split(/\n\s*-\s*id:\s*/);
+    for (const block of criteriaBlocks.slice(1)) {
+      const idMatch = block.match(/^(\S+)/);
+      const statusMatch = block.match(/^\s*(?:status|result):\s*(pass|fail)\s*$/m);
+      const reason =
+        parseYamlScalar(block.match(/^\s*reason:\s*(.+)$/m)?.[1]) ||
+        parseYamlScalar(block.match(/^\s*evidence:\s*(.+)$/m)?.[1]) || '';
+
+      if (!idMatch || !statusMatch) continue;
+
+      criteriaResults.push({
+        id: idMatch[1],
+        passed: statusMatch[1] === 'pass',
+        reason,
+      });
+    }
+
+    const passCount = criteriaResults.filter((c) => c.passed).length;
+
+    return {
+      feedback,
+      passCount,
+      totalCount: criteriaResults.length,
+      criteriaResults,
+    };
+  } catch {
+    return { feedback: '', passCount: 0, totalCount: 0, criteriaResults: [] };
   }
-
-  return verdict;
 }
 
-async function readEvalSummary(
-  evalResultPath: string,
-): Promise<{ passCount: number; totalCount: number }> {
-  const content = await readFile(evalResultPath, 'utf8');
-  const passCount = [...content.matchAll(/(?:status|result):\s*pass/g)].length;
-  const failCount = [...content.matchAll(/(?:status|result):\s*fail/g)].length;
-
-  return {
-    passCount,
-    totalCount: passCount + failCount,
-  };
+function parseYamlScalar(raw: string | undefined): string {
+  if (!raw) return '';
+  return raw.trim().replace(/^["']|["']$/g, '');
 }
+
+// ─── Shared Helpers ──────────────────────────────────────────────────────────
+
+async function loadContract(projectDir: string, contractPath: string) {
+  const absPath = path.isAbsolute(contractPath)
+    ? contractPath
+    : path.join(projectDir, contractPath);
+  return parseContract(absPath);
+}
+
+function resolvePath(projectDir: string, filePath: string): string {
+  return path.isAbsolute(filePath) ? filePath : path.join(projectDir, filePath);
+}
+
+// ─── CLI Registration ────────────────────────────────────────────────────────
 
 export function registerCallback(program: Command): void {
   program
     .command('callback <taskId>')
-    .description('Process generator/evaluator callback and send notification')
+    .description('Process generator/evaluator callback: update status, notify, and auto-dispatch next step')
     .option('--project <dir>', 'Project directory', process.cwd())
     .option('--role <role>', 'Callback role: generator | evaluator', 'generator')
-    .option('--model <name>', 'Model used by generator (e.g. claude-sonnet-4-6)')
-    .option('--input-tokens <n>', 'Input token count consumed by generator')
-    .option('--output-tokens <n>', 'Output token count consumed by generator')
+    .option('--model <name>', 'Model used by generator')
+    .option('--input-tokens <n>', 'Input tokens consumed')
+    .option('--output-tokens <n>', 'Output tokens consumed')
     .action(async (taskId: string, options: CallbackOptions) => {
       try {
         await runCallback(taskId, options);
