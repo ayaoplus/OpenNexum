@@ -22,9 +22,9 @@ export async function detectAvailableCli(): Promise<CliAvailability> {
   return { claude, codex };
 }
 
-export async function detectGitRemote(projectDir: string): Promise<boolean> {
+export async function detectGitRemote(projectDir: string, remote = "origin"): Promise<boolean> {
   try {
-    await execFileAsync("git", ["ls-remote", "--exit-code", "origin"], {
+    await execFileAsync("git", ["ls-remote", "--exit-code", remote], {
       cwd: projectDir,
       timeout: 10000,
     });

@@ -150,7 +150,7 @@ async function runWizard(projectDir: string, useDefaults: boolean): Promise<Wiza
 
     if (gitRemote) {
       process.stdout.write(`  正在检测 ${gitRemote} 连通性...`);
-      const reachable = await detectGitRemote(projectDir);
+      const reachable = await detectGitRemote(projectDir, gitRemote);
       if (reachable) {
         process.stdout.write(" ✓\n");
       } else {

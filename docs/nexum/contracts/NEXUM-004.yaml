@@ -40,7 +40,7 @@ eval_strategy:
       method: code_review
       threshold: must_pass
     - id: C5
-      desc: "git remote 校验：填了才校验，留空不报错"
+      desc: "git remote 校验：有值时（包括默认 origin）做连通性校验，校验失败只 warn 不阻断初始化；显式用 '-' 跳过时不进入校验"
       method: code_review
       threshold: must_pass
     - id: C6
