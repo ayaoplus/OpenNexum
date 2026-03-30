@@ -28,8 +28,12 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
   const hasTokenInfo = inputTokens > 0 || outputTokens > 0;
 
   // Check whether generator actually committed (HEAD should differ from base_commit)
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined }));
+  const hasRemote = !!(config.git?.remote);
   const currentHead = await getHeadCommit(projectDir).catch(() => '');
-  const commitMissing = task.base_commit
+  // Only flag commitMissing when a remote is configured (push is expected)
+  const commitMissing = hasRemote
+    && task.base_commit
     && currentHead
     && currentHead === task.base_commit;
 
@@ -40,7 +44,6 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
   });
 
   // Send Telegram notification
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
   const target = config.notify?.target;
 
   if (target) {

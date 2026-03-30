@@ -59,14 +59,23 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     `${taskId}-iter-${iteration}.yaml`
   );
 
+  const config = await loadConfig(projectDir);
+  const gitRemote = config.git?.remote;
+  const gitBranch = config.git?.branch ?? 'main';
+
   const type = detectCommitType(contract.name);
   const scope = taskId.toUpperCase();
   const commitMsg = `${type}(${scope}): ${taskId}: ${contract.name}`;
-  const gitCommitCmd = [
-    `git add -- ${contract.scope.files.join(' ')}`,
-    `git commit -m "${commitMsg}"`,
-    `git push -u origin HEAD`,
-  ].join(' && ');
+  const gitCommitCmd = gitRemote
+    ? [
+        `git add -- ${contract.scope.files.join(' ')}`,
+        `git commit -m "${commitMsg}"`,
+        `git push -u ${gitRemote} ${gitBranch}`,
+      ].join(' && ')
+    : [
+        `git add -- ${contract.scope.files.join(' ')}`,
+        `git commit -m "${commitMsg}"`,
+      ].join(' && ');
 
   const promptContent = renderGeneratorPrompt({
     contract,
@@ -91,7 +100,6 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     iteration,
   });
 
-  const config = await loadConfig(projectDir);
   const agentCli = resolveAgentCli(config, contract.generator);
   const label = `nexum-${taskId.toLowerCase()}-${contract.generator}`;
 
