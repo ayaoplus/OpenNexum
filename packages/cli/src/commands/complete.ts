@@ -312,24 +312,7 @@ export async function runComplete(
     const agentCli = resolveAgentCli(config, contract.generator);
     const label = `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`;
 
-    if (notifyTarget) {
-      const msg = formatFail(
-        taskId,
-        contract.name,
-        iteration,
-        evalSummary.passCount,
-        evalSummary.totalCount,
-        evalSummary.failedCriteria.length,
-        evalSummary.failedCriteria,
-        evalSummary.feedback.slice(0, 200),
-        {
-          evaluatorName: contract.evaluator,
-          criteriaResults: evalSummary.criteriaResults,
-          autoRetryHint: `系统将自动重试，下一次迭代: 第${nextIteration + 1}次`,
-        }
-      );
-      await sendMessage(notifyTarget, msg).catch(() => {});
-    }
+    // Fail/retry notification is sent by callback --role evaluator, not here
 
     const retryPayload: RetryPayload = {
       action: 'retry',
@@ -362,22 +345,7 @@ export async function runComplete(
     last_error: `${ESCALATED_REASON_PREFIX} ${escalationReason}`,
   });
 
-  if (notifyTarget) {
-    const msg = formatEscalation(
-      taskId,
-      contract.name,
-      escalationHistory,
-      `nexum retry ${taskId} --force`,
-      {
-        evaluatorName: contract.evaluator,
-        reason: escalationReason,
-        note: shouldEscalateBySimilarity
-          ? '连续 2 次 fail 的 feedback 高度相似，可能是 Contract criteria 写错。'
-          : undefined,
-      }
-    );
-    await sendMessage(notifyTarget, msg).catch(() => {});
-  }
+  // Escalation notification is sent by callback --role evaluator, not here
 
   return {
     action: 'escalated',
