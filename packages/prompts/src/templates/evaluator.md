@@ -35,9 +35,9 @@ feedback: "总体评语"
 
 ```bash
 nexum callback {{TASK_ID}} --project {{PROJECT_DIR}} --role evaluator \
-  --model <当前使用的模型名，如 claude-sonnet-4-6> \
-  --input-tokens <本次对话 input token 数量> \
-  --output-tokens <本次对话 output token 数量>
+  --model <current model name, use gpt-5.4 instead of gpt-5 when applicable> \
+  --input-tokens <input token count for this conversation> \
+  --output-tokens <output token count for this conversation>
 ```
 
 此步骤不可跳过，否则编排流程无法推进。

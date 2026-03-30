@@ -48,7 +48,7 @@ function generatorVars(context: PromptContext): Record<string, string> {
 
 export function renderGeneratorPrompt(context: PromptContext): string {
   const isWriting = context.contract.type === 'creative';
-  const templateName = isWriting ? 'generator-writing.md' : 'generator-coding.md';
+  const templateName = isWriting ? 'generator-writing.md' : 'generator.md';
   const template = loadTemplate(templateName);
   return applyVariables(template, generatorVars(context));
 }
