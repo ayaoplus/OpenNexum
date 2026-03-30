@@ -144,9 +144,9 @@ async function runWizard(projectDir: string, useDefaults: boolean): Promise<Wiza
     const stack = (await ask("技术栈描述 (默认: 留空): ")).trim();
 
     // Step 3: git remote
-    const gitRemoteInput = (await ask("Git remote 名称 (默认: origin, 留空跳过 push): ")).trim();
-    // If user explicitly entered nothing → no remote; if user entered a value use it; if user just hit enter on the "(默认: origin)" prompt → origin
-    const gitRemote = gitRemoteInput === "" ? "" : gitRemoteInput;
+    const gitRemoteInput = (await ask("Git remote 名称 (默认: origin, 留空 = 不 push): ")).trim();
+    // Empty input → default to 'origin'; enter a single space or '-' to opt out of push
+    const gitRemote = gitRemoteInput === "" ? "origin" : (gitRemoteInput === "-" ? "" : gitRemoteInput);
 
     if (gitRemote) {
       process.stdout.write(`  正在检测 ${gitRemote} 连通性...`);
@@ -224,10 +224,7 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
   const agents: Record<string, { cli: string }> = {};
   if (cliAvail.codex) agents["codex"] = { cli: "codex" };
   if (cliAvail.claude) agents["claude"] = { cli: "claude" };
-  if (!cliAvail.codex && !cliAvail.claude) {
-    agents["codex"] = { cli: "codex" };
-    agents["claude"] = { cli: "claude" };
-  }
+  // If neither CLI is available, leave agents empty (warn already printed above)
 
   // Build full config
   const config: Record<string, unknown> = {
