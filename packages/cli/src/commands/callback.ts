@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -24,11 +25,12 @@ import {
   formatCommitMissing,
   sendMessage,
 } from '@nexum/notify';
-import { spawnAcpSession } from '@nexum/spawn';
 import { runComplete } from './complete.js';
 import { runSpawn, runSpawnEval } from './spawn.js';
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_WEBHOOK_GATEWAY_URL = 'http://127.0.0.1:18789';
+const WEBHOOK_AGENT_PATH = 'hooks/agent';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -39,6 +41,8 @@ interface CallbackOptions {
   outputTokens?: string;
   role?: 'generator' | 'evaluator';
 }
+
+type DispatchRole = 'generator' | 'evaluator';
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
@@ -79,6 +83,90 @@ async function getLastCommitMessage(projectDir: string): Promise<string> {
   } catch {
     return '';
   }
+}
+
+async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir: string): Promise<boolean> {
+  try {
+    const config = await loadConfig(projectDir).catch(() => ({ webhook: undefined } as NexumConfig));
+    const token = await resolveWebhookToken(config);
+
+    if (!token) {
+      console.warn(`[callback] webhook dispatch skipped for ${taskId}: no hooks token configured`);
+      return false;
+    }
+
+    const endpoint = new URL(
+      WEBHOOK_AGENT_PATH,
+      withTrailingSlash(config.webhook?.gatewayUrl?.trim() || DEFAULT_WEBHOOK_GATEWAY_URL)
+    ).toString();
+    const payload = {
+      message: `nexum-dispatch: ${taskId} ${role} ${projectDir}`,
+      name: 'Nexum',
+      agentId: 'main',
+      deliver: false,
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const details = summarizeResponse(await response.text().catch(() => ''));
+      console.warn(
+        `[callback] webhook dispatch failed for ${taskId}: ${response.status} ${response.statusText}${details ? ` - ${details}` : ''}`
+      );
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn(`[callback] webhook dispatch failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+
+async function resolveWebhookToken(config: NexumConfig): Promise<string | undefined> {
+  const envToken = process.env.OPENCLAW_HOOKS_TOKEN?.trim();
+  if (envToken) {
+    return envToken;
+  }
+
+  const configToken = config.webhook?.token?.trim();
+  if (configToken) {
+    return configToken;
+  }
+
+  return readOpenClawHooksToken();
+}
+
+async function readOpenClawHooksToken(): Promise<string | undefined> {
+  const openClawConfigPath = path.join(homedir(), '.openclaw', 'openclaw.json');
+
+  try {
+    const contents = await readFile(openClawConfigPath, 'utf8');
+    const parsed = JSON.parse(contents) as { hooks?: { token?: unknown } };
+    const token = parsed.hooks?.token;
+    return typeof token === 'string' && token.trim() ? token.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+function summarizeResponse(body: string): string {
+  const normalized = body.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return '';
+  }
+  return normalized.length > 200 ? `${normalized.slice(0, 197)}...` : normalized;
 }
 
 // ─── Generator Callback ──────────────────────────────────────────────────────
@@ -133,14 +221,12 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 
   // ── Step 3: Auto-dispatch evaluator ──
   try {
-    const evalPayload = await runSpawnEval(taskId, projectDir);
+    await runSpawnEval(taskId, projectDir);
     const evalSessionName = `claude-eval-${taskId}`;
-    const session = await spawnAcpSession({
-      ...evalPayload,
-      agentId: evalSessionName,
-      mode: 'run',
-    });
-    console.log(`[callback] auto-dispatched evaluator ${evalSessionName}: ${session.sessionKey}`);
+    const dispatched = await dispatchViaWebhook(taskId, 'evaluator', projectDir);
+    if (dispatched) {
+      console.log(`[callback] auto-dispatched evaluator ${evalSessionName} via webhook`);
+    }
   } catch (err) {
     console.warn(`[callback] auto-dispatch evaluator failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
   }
@@ -229,8 +315,10 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   // ── Step 4: Auto-dispatch next step ──
   if (result.action === 'retry' && result.retryPayload) {
     try {
-      const session = await spawnAcpSession({ ...result.retryPayload, mode: 'run' });
-      console.log(`[callback] auto-dispatched retry generator: ${session.sessionKey}`);
+      const dispatched = await dispatchViaWebhook(taskId, 'generator', projectDir);
+      if (dispatched) {
+        console.log(`[callback] auto-dispatched retry generator for ${taskId} via webhook`);
+      }
     } catch (err) {
       console.warn(`[callback] auto-dispatch retry failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
     }
@@ -254,10 +342,12 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
     if (!task) continue;
 
     try {
-      const payload = await runSpawn(id, projectDir);
+      await runSpawn(id, projectDir);
       const sessionName = `codex-gen-${id}`;
-      const session = await spawnAcpSession({ ...payload, agentId: sessionName, mode: 'run' });
-      console.log(`[callback] auto-dispatched next generator ${sessionName}: ${session.sessionKey}`);
+      const dispatched = await dispatchViaWebhook(id, 'generator', projectDir);
+      if (dispatched) {
+        console.log(`[callback] auto-dispatched next generator ${sessionName} via webhook`);
+      }
     } catch (err) {
       console.warn(`[callback] auto-dispatch generator failed for ${id}: ${err instanceof Error ? err.message : err}`);
     }

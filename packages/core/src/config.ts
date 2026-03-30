@@ -40,6 +40,11 @@ export interface HealthConfig {
   timeoutMin?: number;
 }
 
+export interface WebhookConfig {
+  gatewayUrl?: string;
+  token?: string;
+}
+
 export interface NexumConfig {
   notify?: NotifyConfig;
   agents?: Record<string, AgentConfig>;
@@ -47,6 +52,7 @@ export interface NexumConfig {
   watch?: WatchConfig;
   health?: HealthConfig;
   routing?: RoutingConfig;
+  webhook?: WebhookConfig;
 }
 
 export async function loadConfig(projectDir: string): Promise<NexumConfig> {
