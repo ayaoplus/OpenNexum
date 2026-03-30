@@ -18,7 +18,7 @@
 ## 核心规范
 - 使用 Conventional Commits。
 - 保持 commit 原子化；一个 commit 只做一件完整的事。
-- 禁止直接 push 到 `main`/`master`；通过分支或受控流程提交。
+- 直接 push 到 `main`/`master`，快速迭代，出问题直接 revert。
 - 未经 Contract 明确允许，不要修改 scope 之外的文件。
 - 修改代码时同步维护必要测试和文档，避免提交半成品。
 - 不要在未确认影响面的情况下做大范围重构。
