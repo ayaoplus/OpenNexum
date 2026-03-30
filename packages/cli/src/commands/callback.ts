@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import {
+  getActiveBatch,
+  getBatchProgress,
   getTask,
+  readTasks,
   updateTask,
   TaskStatus,
   loadConfig,
@@ -10,7 +13,11 @@ import {
   parseContract,
   type EvalVerdict,
 } from '@nexum/core';
-import { sendMessage } from '@nexum/notify';
+import {
+  formatComplete,
+  formatGeneratorComplete as formatGeneratorDone,
+  sendMessage,
+} from '@nexum/notify';
 import { spawnAcpSession } from '@nexum/spawn';
 import { runComplete } from './complete.js';
 
@@ -20,10 +27,6 @@ interface CallbackOptions {
   inputTokens?: string;
   outputTokens?: string;
   role?: 'generator' | 'evaluator';
-}
-
-function formatTokens(n: number): string {
-  return n.toLocaleString('en-US');
 }
 
 export async function runCallback(taskId: string, options: CallbackOptions): Promise<void> {
@@ -48,12 +51,15 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
   }
+  const contractAbsPath = path.isAbsolute(task.contract_path)
+    ? task.contract_path
+    : path.join(projectDir, task.contract_path);
+  const contract = await parseContract(contractAbsPath);
 
   // Parse token / model info
   const model = options.model?.trim() || '';
   const inputTokens = parseInt(options.inputTokens ?? '0', 10) || 0;
   const outputTokens = parseInt(options.outputTokens ?? '0', 10) || 0;
-  const hasTokenInfo = inputTokens > 0 || outputTokens > 0;
 
   // Check whether generator actually committed (HEAD should differ from base_commit)
   const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined }));
@@ -84,15 +90,14 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
           `📍 HEAD 仍为: \`${currentHead.slice(0, 7)}\`（与 base_commit 相同）`,
           '❗ 请检查 generator 是否执行了 git commit + push',
         ]
-      : [
-          '✅ Generator 完成',
-          '━━━━━━━━━━━━━━━',
-          `📋 任务内容: ${task.name}`,
-          `🆔 任务ID: ${taskId}`,
-          ...(model ? [`🤖 模型: ${model}`] : []),
-          ...(hasTokenInfo ? [`🪙 Token: ${formatTokens(inputTokens)} in / ${formatTokens(outputTokens)} out`] : []),
-          '💬 等待编排者触发 eval',
-        ];
+      : formatGeneratorDone(taskId, task.name, contract.generator, {
+          model,
+          inputTokens,
+          outputTokens,
+          commitHash: currentHead,
+          iteration: task.iteration,
+          scopeFiles: contract.scope.files,
+        }).split('\n');
 
     await sendMessage(target, lines.join('\n'));
   }
@@ -127,7 +132,9 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
     ? task.eval_result_path
     : path.join(projectDir, task.eval_result_path);
   const verdict = await readEvalVerdict(evalResultPath);
+  const evalSummary = await readEvalSummary(evalResultPath);
   const iteration = task.iteration ?? 0;
+  const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
 
   const completeResult =
     verdict === 'pass'
@@ -154,6 +161,35 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
     }
   }
 
+  if (completeResult.action === 'done') {
+    const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+    const target = config.notify?.target;
+
+    if (target) {
+      const tasks = await readTasks(projectDir);
+      const overallDone = tasks.filter((item) => item.status === TaskStatus.Done).length;
+      const activeBatch = await getActiveBatch(projectDir);
+      const batchProgress = activeBatch ? await getBatchProgress(projectDir, activeBatch) : null;
+      const msg = formatComplete(
+        taskId,
+        contract.name,
+        Date.now() - startedAt,
+        iteration,
+        evalSummary.passCount,
+        evalSummary.totalCount,
+        completeResult.unlockedTasks ?? [],
+        `${overallDone}/${tasks.length}`,
+        {
+          evaluatorName: contract.evaluator,
+          batchProgress: batchProgress
+            ? `${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}`
+            : undefined,
+        }
+      );
+      await sendMessage(target, msg).catch(() => {});
+    }
+  }
+
   console.log(JSON.stringify({
     ok: true,
     taskId,
@@ -174,6 +210,19 @@ async function readEvalVerdict(evalResultPath: string): Promise<EvalVerdict> {
   }
 
   return verdict;
+}
+
+async function readEvalSummary(
+  evalResultPath: string,
+): Promise<{ passCount: number; totalCount: number }> {
+  const content = await readFile(evalResultPath, 'utf8');
+  const passCount = [...content.matchAll(/(?:status|result):\s*pass/g)].length;
+  const failCount = [...content.matchAll(/(?:status|result):\s*fail/g)].length;
+
+  return {
+    passCount,
+    totalCount: passCount + failCount,
+  };
 }
 
 export function registerCallback(program: Command): void {

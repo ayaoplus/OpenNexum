@@ -14,7 +14,6 @@ import {
 import type { EvalVerdict, AgentCli } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
 import {
-  formatComplete,
   formatEscalation,
   formatFail,
   sendMessage,
@@ -220,8 +219,6 @@ export async function runComplete(
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
 
-  const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
-  const elapsedMs = Date.now() - startedAt;
   const iteration = task.iteration ?? 0;
 
   const evalSummary = task.eval_result_path
@@ -252,21 +249,6 @@ export async function runComplete(
     const unlockedIds = await unlockDownstreamTasks(projectDir, taskId);
     const tasks = await readTasks(projectDir);
     const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
-
-    if (notifyTarget) {
-      const msg = formatComplete(
-        taskId,
-        contract.name,
-        elapsedMs,
-        iteration,
-        evalSummary.passCount,
-        evalSummary.totalCount,
-        unlockedIds,
-        `${doneCount}/${tasks.length}`,
-        { evaluatorName: contract.evaluator }
-      );
-      await sendMessage(notifyTarget, msg).catch(() => {});
-    }
 
     if (doneCount > 20) {
       await archiveDoneTasks(projectDir).catch((error) => {

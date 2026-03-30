@@ -254,9 +254,14 @@ export async function runWatch(opts: { intervalMin?: number; timeoutMin?: number
 
           try {
             const payload = await runSpawnEval(task.id, projectDir);
+            const evaluatorSessionName = `claude-eval-${task.id}`;
             const session = await (async () => {
               try {
-                return await spawnAcpSession({ ...payload, mode: 'run' });
+                return await spawnAcpSession({
+                  ...payload,
+                  agentId: evaluatorSessionName,
+                  mode: 'run',
+                });
               } catch (error) {
                 await updateTask(projectDir, task.id, { status: TaskStatus.GeneratorDone });
                 throw error;
@@ -270,6 +275,7 @@ export async function runWatch(opts: { intervalMin?: number; timeoutMin?: number
               `📋 任务内容: ${task.name}`,
               `🆔 任务ID: ${task.id}`,
               `🤖 Evaluator: ${payload.agentId}`,
+              `🪪 Session Name: ${evaluatorSessionName}`,
               `🔑 Session: ${session.sessionKey}`,
             ]);
           } catch (err) {

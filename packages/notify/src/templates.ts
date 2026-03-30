@@ -9,12 +9,16 @@ export interface NotifyCriterionResult {
 export interface GeneratorCompleteOptions {
   model?: string;
   tokenText?: string;
+  scopeFiles?: string[];
+  inputTokens?: number;
+  outputTokens?: number;
   commitHash?: string;
   iteration?: number;
 }
 
 export interface ReviewPassOptions {
   evaluatorName?: string;
+  batchProgress?: string;
 }
 
 export interface ReviewFailOptions {
@@ -60,24 +64,56 @@ function formatCriteriaLines(criteriaResults: NotifyCriterionResult[]): string[]
   });
 }
 
+function formatTokenLine(options: GeneratorCompleteOptions): string | null {
+  if (options.tokenText?.trim()) {
+    return `🪙 Token: ${options.tokenText.trim()}`;
+  }
+
+  const inputTokens = options.inputTokens ?? 0;
+  const outputTokens = options.outputTokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) {
+    return null;
+  }
+
+  return `🪙 Token: ${inputTokens.toLocaleString('en-US')} in / ${outputTokens.toLocaleString('en-US')} out`;
+}
+
+function formatProgressLine(progress: string, batchProgress?: string): string {
+  return batchProgress
+    ? `📊 ${batchProgress}  |  总体: ${progress}`
+    : `📊 总体: ${progress}`;
+}
+
+export function formatGeneratorDone(
+  taskId: string,
+  taskName: string,
+  agentName: string,
+  options: GeneratorCompleteOptions = {}
+): string {
+  const tokenLine = formatTokenLine(options);
+
+  return [
+    `🔨 [1/2] 代码已提交 — ${taskId}`,
+    SEP,
+    `📋 任务: ${taskName}`,
+    `🤖 Agent: ${agentName}`,
+    ...(options.scopeFiles ? [`📁 Scope: ${options.scopeFiles.length} 个文件`] : []),
+    ...(options.model ? [`🧠 模型: ${options.model}`] : []),
+    ...(tokenLine ? [tokenLine] : []),
+    `🧾 Commit: ${shortHash(options.commitHash)}`,
+    `🔁 迭代: 第${(options.iteration ?? 0) + 1}次`,
+    '⏳ 状态: 等待审查',
+    SEP,
+  ].join('\n');
+}
+
 export function formatGeneratorComplete(
   taskId: string,
   taskName: string,
   agentName: string,
   options: GeneratorCompleteOptions = {}
 ): string {
-  return [
-    `🔨 [1/2] 代码已提交 — ${taskId}`,
-    SEP,
-    `📋 任务: ${taskName}`,
-    `🤖 Agent: ${agentName}`,
-    ...(options.model ? [`🧠 模型: ${options.model}`] : []),
-    ...(options.tokenText ? [`🪙 Token: ${options.tokenText}`] : []),
-    `🧾 Commit: ${shortHash(options.commitHash)}`,
-    `🔁 迭代: 第${(options.iteration ?? 0) + 1}次`,
-    '⏳ 状态: 等待审查',
-    SEP,
-  ].join('\n');
+  return formatGeneratorDone(taskId, taskName, agentName, options);
 }
 
 export function formatDispatchNotification(
@@ -109,7 +145,8 @@ export function formatReviewPassed(
   passCount: number,
   totalCount: number,
   unlockedTasks: string[],
-  progress: string
+  progress: string,
+  options: ReviewPassOptions = {}
 ): string {
   return [
     `✅ [2/2] 审查通过 — ${taskId}`,
@@ -120,7 +157,7 @@ export function formatReviewPassed(
     `🔁 迭代: 第${iteration + 1}次`,
     `🎯 Criteria: ${passCount}/${totalCount}`,
     `🔓 解锁任务: ${unlockedTasks.length > 0 ? unlockedTasks.join(', ') : '无'}`,
-    `📊 进度: ${progress}`,
+    formatProgressLine(progress, options.batchProgress),
     SEP,
   ].join('\n');
 }
@@ -218,7 +255,8 @@ export function formatComplete(
     passCount,
     totalCount,
     unlockedTasks,
-    progress
+    progress,
+    options
   );
 }
 
