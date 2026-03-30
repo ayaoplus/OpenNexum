@@ -162,8 +162,10 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
     }
     try {
       const { stdout } = await execFileAsync('launchctl', ['list', PLIST_LABEL]);
-      const parsed = JSON.parse(stdout) as { PID?: unknown };
-      return typeof parsed.PID === 'number' ? 'running' : 'stopped';
+      // launchctl list <label> returns plist-style "key" = value; format, not JSON
+      // Check for PID field which is only present when the process is running
+      const pidMatch = stdout.match(/"PID"\s*=\s*(\d+)/);
+      return pidMatch ? 'running' : 'stopped';
     } catch {
       return 'stopped';
     }
