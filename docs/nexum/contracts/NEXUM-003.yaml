@@ -1,0 +1,45 @@
+id: NEXUM-003
+name: "spawn.ts git remote 可选支持：无 remote 时仅本地 commit，不 push"
+type: coding
+created_at: "2026-03-30T01:00:00Z"
+
+scope:
+  files:
+    - packages/cli/src/commands/spawn.ts
+    - packages/cli/src/commands/callback.ts
+  boundaries:
+    - packages/core/
+    - packages/prompts/
+    - packages/notify/
+    - packages/spawn/
+  conflicts_with: []
+
+deliverables:
+  - "packages/cli/src/commands/spawn.ts：生成 gitCommitCmd 时读取 config.git.remote（通过 loadConfig）；若 config.git.remote 有值则生成 'git add && git commit && git push -u <remote> <branch>'；若为空/未配置则生成 'git add && git commit'（不含 push）；git.branch 默认 'main'，git.remote 默认 'origin'"
+  - "packages/cli/src/commands/callback.ts：commit 检测逻辑保持不变；从 config.git.remote 判断是否期望有 push，若无 remote 配置则不做 push 检测（ACP session 外的 push 失败检测意义不大）"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "config.git.remote 有值时，gitCommitCmd 包含 git push"
+      method: code_review
+      threshold: must_pass
+    - id: C2
+      desc: "config.git.remote 为空/未配置时，gitCommitCmd 不包含 git push"
+      method: code_review
+      threshold: must_pass
+    - id: C3
+      desc: "git.branch 和 git.remote 均有合理默认值（main / origin）"
+      method: code_review
+      threshold: must_pass
+    - id: C4
+      desc: "loadConfig 调用正确，不引入额外依赖"
+      method: code_review
+      threshold: must_pass
+
+generator: cc-frontend
+evaluator: codex-1
+max_iterations: 3
+depends_on:
+  - NEXUM-002

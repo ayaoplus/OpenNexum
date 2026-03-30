@@ -1,0 +1,57 @@
+id: NEXUM-005
+name: "全局 watch 多项目管理：nexum watch install/uninstall/add-project/list-projects"
+type: coding
+created_at: "2026-03-30T01:00:00Z"
+
+scope:
+  files:
+    - packages/cli/src/commands/health.ts
+    - packages/cli/src/lib/global-config.ts
+    - packages/cli/src/lib/daemon.ts
+  boundaries:
+    - packages/core/
+    - packages/prompts/
+    - packages/notify/
+    - packages/spawn/
+    - packages/cli/src/commands/init.ts
+    - packages/cli/src/commands/spawn.ts
+  conflicts_with: []
+
+deliverables:
+  - "packages/cli/src/lib/global-config.ts（新建）：全局配置路径 ~/.nexum/config.json；GlobalConfig 类型 { projects: string[]; watch: { intervalMin: number; timeoutMin: number } }；readGlobalConfig() / writeGlobalConfig() / addProject(dir) / removeProject(dir)；addProject 做幂等（已存在不重复添加）"
+  - "packages/cli/src/lib/daemon.ts（新建）：installDaemon(projectDir?) 根据 OS 自动选择注册方式：macOS → 生成 plist 到 ~/Library/LaunchAgents/com.nexum.watch.plist，调用 launchctl load；Linux → 生成 ~/.config/systemd/user/nexum-watch.service，调用 systemctl --user enable --now；其他 OS → 打印提示手动运行 'nexum watch'；uninstallDaemon() 反向操作；getDaemonStatus() 返回 'running' | 'stopped' | 'not_installed' | 'unsupported'；plist/service 文件里的 nexum 路径用 which nexum 解析的绝对路径"
+  - "packages/cli/src/commands/health.ts：runWatch 改为从 readGlobalConfig() 读取 projects 列表，轮询所有项目（而非只 --project 一个）；新增子命令 watch install（调用 installDaemon + addProject）、watch uninstall（调用 uninstallDaemon）、watch add-project <dir>（调用 addProject，如守护进程在运行则 reload）、watch remove-project <dir>（调用 removeProject）、watch list（列出所有监控项目及状态）、watch status（守护进程运行状态）；watch install 时若 init 已配置 watch.enabled=true 则静默安装"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "全局配置读写正确，路径 ~/.nexum/config.json，addProject 幂等"
+      method: code_review
+      threshold: must_pass
+    - id: C2
+      desc: "macOS launchctl plist 格式正确，nexum 路径用 which 解析"
+      method: code_review
+      threshold: must_pass
+    - id: C3
+      desc: "Linux systemd service 格式正确（bonus，macOS 必须，Linux 尽力）"
+      method: code_review
+      threshold: should_pass
+    - id: C4
+      desc: "runWatch 轮询全局 projects 列表，不再依赖 --project 单项目"
+      method: code_review
+      threshold: must_pass
+    - id: C5
+      desc: "watch install/uninstall/add-project/list/status 子命令均已注册"
+      method: code_review
+      threshold: must_pass
+    - id: C6
+      desc: "守护进程未安装时 watch status 友好提示，不报错退出"
+      method: code_review
+      threshold: must_pass
+
+generator: cc-frontend
+evaluator: codex-1
+max_iterations: 3
+depends_on:
+  - NEXUM-004
