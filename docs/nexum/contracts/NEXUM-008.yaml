@@ -1,0 +1,58 @@
+id: NEXUM-008
+name: "编排自动化：watch 驱动 eval/complete/retry/unlock 全链路"
+type: coding
+created_at: "2026-03-30T05:00:00Z"
+
+scope:
+  files:
+    - packages/cli/src/commands/health.ts
+    - packages/cli/src/commands/callback.ts
+    - packages/spawn/src/spawn.ts
+  boundaries:
+    - packages/core/
+    - packages/notify/
+    - packages/prompts/
+    - packages/cli/src/commands/init.ts
+    - packages/cli/src/commands/spawn.ts
+    - packages/cli/src/commands/eval.ts
+    - packages/cli/src/commands/complete.ts
+  conflicts_with:
+    - NEXUM-009
+
+deliverables:
+  - "packages/cli/src/commands/callback.ts：新增 --role 参数（generator | evaluator，默认 generator）；当 --role evaluator 时：读取 task.eval_result_path 对应的 YAML 文件，解析 verdict（pass/fail/escalated）；pass → 调用 runComplete(taskId, 'pass', projectDir)；fail + iteration < max_iterations → 调用 runComplete(taskId, 'fail', projectDir)（触发 retry）；fail + iteration >= max_iterations → 状态改为 escalated，发 escalation 通知；escalated → 同上；--role generator 行为不变"
+  - "packages/spawn/src/spawn.ts：spawnAcpSession 完成后，自动调用 nexum track；返回值补充 sessionKey 字段"
+  - "packages/cli/src/commands/health.ts：runWatch 的轮询逻辑扩展：检测 status=generator_done 的任务 → 自动调用 runSpawnEval(task.id, projectDir) + 启动 evaluator ACP session（复用 spawnAcpSession）+ track；检测 status=evaluating 且 eval_result_path 文件已存在 → 自动调用 runCallback(taskId, { project: projectDir, role: 'evaluator' })；检测 status=done 且有 blocked 任务可解锁 → 自动调用 nexum complete 已触发的 unlock + runSpawn 下一个 pending 任务 + 启动 generator ACP session；以上每步操作后发 Telegram 通知；所有自动操作加 try/catch，失败只 warn 不崩溃"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "callback --role evaluator：正确读取 eval yaml，根据 verdict 自动推进到 done/retry/escalated"
+      method: code_review
+      threshold: must_pass
+    - id: C2
+      desc: "callback --role generator 行为不变（向后兼容）"
+      method: code_review
+      threshold: must_pass
+    - id: C3
+      desc: "runWatch 检测 generator_done → 自动 spawn evaluator，有 session 启动和 track"
+      method: code_review
+      threshold: must_pass
+    - id: C4
+      desc: "runWatch 检测 eval yaml 已写入 → 自动调用 callback --role evaluator"
+      method: code_review
+      threshold: must_pass
+    - id: C5
+      desc: "runWatch 检测 done → 解锁 blocked 任务 + spawn 下一个 generator"
+      method: code_review
+      threshold: must_pass
+    - id: C6
+      desc: "所有自动操作有 try/catch，单个任务失败不影响其他任务的轮询"
+      method: code_review
+      threshold: must_pass
+
+generator: auto
+evaluator: auto
+max_iterations: 3
+depends_on: []

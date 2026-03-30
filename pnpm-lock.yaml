@@ -35,7 +35,11 @@ importers:
 
   packages/core: {}
 
-  packages/notify: {}
+  packages/notify:
+    dependencies:
+      execa:
+        specifier: ^8.0.1
+        version: 8.0.1
 
   packages/prompts:
     devDependencies:

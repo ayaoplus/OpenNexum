@@ -1,0 +1,54 @@
+id: NEXUM-011
+name: "通知/eval 三个 bug 修复：并行 eval session、token/scope 补回、重复通知去除"
+type: coding
+created_at: "2026-03-30T06:25:00Z"
+
+scope:
+  files:
+    - packages/cli/src/commands/health.ts
+    - packages/cli/src/commands/callback.ts
+    - packages/cli/src/commands/complete.ts
+    - packages/notify/src/templates.ts
+  boundaries:
+    - packages/core/
+    - packages/spawn/
+    - packages/prompts/
+    - packages/cli/src/commands/spawn.ts
+    - packages/cli/src/commands/init.ts
+    - packages/cli/src/lib/auto-route.ts
+  conflicts_with: []
+
+deliverables:
+  - "packages/cli/src/commands/health.ts：runWatch 里 spawn evaluator 时，session name 改为 'claude-eval-<taskId>'（如 claude-eval-NEXUM-011），而不是固定的 claude-eval-01；这样每个任务有独立 evaluator session，真正并行"
+  - "packages/notify/src/templates.ts：formatGeneratorDone 函数（现有或新增）：加回 scopeFiles: string[]（显示 '📁 Scope: N 个文件'）和 inputTokens/outputTokens 可选字段（显示 '🪙 Token: X in / Y out'，两者均为 0 时不显示）；formatReviewPassed / formatComplete：进度字段改为显示 batch 进度（若有）+ 总体，格式 '📊 <batch>: X/Y  |  总体: A/B' 或 '📊 总体: A/B'"
+  - "packages/cli/src/commands/callback.ts：--role generator 时，从 contract.scope.files 读取文件列表传入通知；通知函数改用更新后的 formatGeneratorDone（含 scope 和 token）"
+  - "packages/cli/src/commands/complete.ts：删除 complete.ts 里的 sendMessage 调用（formatComplete 那段）；通知统一由 callback --role evaluator 发送，complete 只负责状态推进和解锁；这样每次只发一条审查通过通知"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "health.ts 里 evaluator session name 为 claude-eval-<taskId>，不同任务不共享 session"
+      method: code_review
+      threshold: must_pass
+    - id: C2
+      desc: "formatGeneratorDone 包含 scope 文件数和可选 token 字段，两者均 0 时 token 行不显示"
+      method: code_review
+      threshold: must_pass
+    - id: C3
+      desc: "callback.ts generator 通知传入 scope files，显示 '📁 Scope: N 个文件'"
+      method: code_review
+      threshold: must_pass
+    - id: C4
+      desc: "complete.ts 里没有 sendMessage 调用，不再重复发通知"
+      method: code_review
+      threshold: must_pass
+    - id: C5
+      desc: "pnpm build 通过，无 TypeScript 错误"
+      method: code_review
+      threshold: must_pass
+
+generator: auto
+evaluator: auto
+max_iterations: 3
+depends_on: []

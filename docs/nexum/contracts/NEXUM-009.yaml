@@ -1,0 +1,53 @@
+id: NEXUM-009
+name: "Escalation 机制：反复 fail 自动升级 + 通知重设计"
+type: coding
+created_at: "2026-03-30T05:00:00Z"
+
+scope:
+  files:
+    - packages/cli/src/commands/complete.ts
+    - packages/notify/src/templates.ts
+    - packages/notify/src/index.ts
+  boundaries:
+    - packages/core/
+    - packages/spawn/
+    - packages/prompts/
+    - packages/cli/src/commands/health.ts
+    - packages/cli/src/commands/callback.ts
+    - packages/cli/src/commands/spawn.ts
+  conflicts_with:
+    - NEXUM-008
+
+deliverables:
+  - "packages/cli/src/commands/complete.ts：verdict=fail 时检查 iteration >= max_iterations（从 contract yaml 读取）；若超限 → status 改为 escalated，发 escalation 通知，不再 retry；额外检查：若连续 2 次 fail 的 feedback 文本相似度 > 80%（简单实现：取两次 feedback 的公共词比例）→ 提前 escalated，通知里注明可能是 Contract criteria 写错；新增 nexum retry <taskId> --force 命令：将 escalated 任务重置为 pending，清空 iteration，允许重新跑"
+  - "packages/notify/src/templates.ts：重写所有通知模板，统一两阶段格式：阶段 1（generator 完成）：标题 '🔨 [1/2] 代码已提交 — {taskId}'，含任务名/agent名/token/commit hash/迭代次数/等待审查；阶段 2 pass（审查通过）：标题 '✅ [2/2] 审查通过 — {taskId}'，含任务名/evaluator名/用时/Criteria N/N/解锁任务/进度；阶段 2 fail：标题 '❌ [2/2] 审查失败 — {taskId} (第N次)'，含 Criteria 展开（每条 ✅/❌ + 简要原因）/feedback 摘要/自动重试提示；escalated：标题 '🚨 任务升级 — {taskId}'，含所有迭代 fail 原因/可用命令提示；派发通知：标题 '🚀 派发任务 — {taskId}'，含 agent/session 名/scope 文件数/进度"
+  - "packages/notify/src/index.ts：导出新模板函数；所有旧 format* 函数保持导出（向后兼容），但内部调用新模板"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "escalation 触发条件正确：iteration >= max_iterations 或连续 2 次 feedback 高度相似"
+      method: code_review
+      threshold: must_pass
+    - id: C2
+      desc: "nexum retry --force 命令实现：重置 escalated 任务到 pending，清空 iteration"
+      method: code_review
+      threshold: must_pass
+    - id: C3
+      desc: "通知模板两阶段语义清晰：[1/2] generator / [2/2] evaluator，字段统一"
+      method: code_review
+      threshold: must_pass
+    - id: C4
+      desc: "fail 时 Criteria 逐条展开（✅/❌），escalated 时包含所有迭代历史"
+      method: code_review
+      threshold: must_pass
+    - id: C5
+      desc: "旧 format* 函数保持导出，向后兼容不破坏现有调用"
+      method: code_review
+      threshold: must_pass
+
+generator: auto
+evaluator: auto
+max_iterations: 3
+depends_on: []
