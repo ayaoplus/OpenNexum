@@ -14,8 +14,10 @@ export async function readTasks(projectDir: string): Promise<Task[]> {
 }
 
 export async function writeTasks(projectDir: string, tasks: Task[]): Promise<void> {
-  const activeTasks = await readActiveTasksFile(projectDir);
-  await writeActiveTasksFile(projectDir, { ...activeTasks, tasks });
+  await withTasksLock(projectDir, async () => {
+    const activeTasks = await readActiveTasksFile(projectDir);
+    await writeActiveTasksFile(projectDir, { ...activeTasks, tasks });
+  });
 }
 
 export async function getBatchProgress(

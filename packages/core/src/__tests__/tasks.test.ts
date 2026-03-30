@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { getUnlockedTasks, updateTask } from "../tasks";
+import {
+  getActiveBatch,
+  getBatchProgress,
+  getUnlockedTasks,
+  updateTask,
+  writeBatch
+} from "../tasks";
 import { TaskStatus, type ActiveTasksFile } from "../types";
 
 test("updateTask uses atomic writes under concurrent updates", async () => {
@@ -143,4 +149,57 @@ test("getUnlockedTasks returns pending tasks whose dependencies are now satisfie
     unlocked.map((task) => task.id),
     ["NX-003"]
   );
+});
+
+test("writeBatch persists currentBatch and getBatchProgress counts done tasks per batch", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-tasks-"));
+  const nexumDir = path.join(projectDir, "nexum");
+  const activeTasksPath = path.join(nexumDir, "active-tasks.json");
+
+  await mkdir(nexumDir, { recursive: true });
+
+  const tasks: ActiveTasksFile = {
+    tasks: [
+      {
+        id: "NX-001",
+        name: "Alpha done",
+        status: TaskStatus.Done,
+        batch: "alpha",
+        contract_path: "docs/nexum/contracts/NX-001.yaml",
+        depends_on: []
+      },
+      {
+        id: "NX-002",
+        name: "Alpha pending",
+        status: TaskStatus.Pending,
+        batch: "alpha",
+        contract_path: "docs/nexum/contracts/NX-002.yaml",
+        depends_on: []
+      },
+      {
+        id: "NX-003",
+        name: "Beta done",
+        status: TaskStatus.Done,
+        batch: "beta",
+        contract_path: "docs/nexum/contracts/NX-003.yaml",
+        depends_on: []
+      }
+    ]
+  };
+
+  await writeFile(activeTasksPath, JSON.stringify(tasks, null, 2) + "\n", "utf8");
+
+  await writeBatch(projectDir, "alpha");
+
+  assert.equal(await getActiveBatch(projectDir), "alpha");
+  assert.deepEqual(await getBatchProgress(projectDir, "alpha"), {
+    batch: "alpha",
+    done: 1,
+    total: 2
+  });
+
+  const rawContents = await readFile(activeTasksPath, "utf8");
+  const parsed = JSON.parse(rawContents) as ActiveTasksFile;
+  assert.equal(parsed.currentBatch, "alpha");
+  assert.equal(parsed.tasks.length, 3);
 });

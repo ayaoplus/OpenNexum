@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-import type { SpawnOptions, SessionRecord } from '@nexum/spawn';
-
 const testingGlobals = globalThis as typeof globalThis & {
-  __nexumCliSpawnAcpSession?: (opts: SpawnOptions) => Promise<SessionRecord>;
   __nexumCliSendMessage?: (chatId: string, text: string, token: string) => Promise<void>;
 };
 
@@ -57,9 +54,9 @@ async function setupProject(
   return projectDir;
 }
 
-// ─── C2: spawn reads contract and calls spawnAcpSession with correct agentId ───
+// ─── C2: spawn prepares payload from contract and marks task running ───
 
-test('runSpawn reads contract and calls spawnAcpSession with correct agentId', async () => {
+test('runSpawn reads contract and returns generator payload with correct agentId', async () => {
   const taskId = 'TEST-001';
   const projectDir = await setupProject([
     {
@@ -72,42 +69,30 @@ test('runSpawn reads contract and calls spawnAcpSession with correct agentId', a
     },
   ]);
 
-  const spawnCalls: SpawnOptions[] = [];
-  testingGlobals.__nexumCliSpawnAcpSession = async (opts) => {
-    spawnCalls.push(opts);
-    return {
-      taskId: opts.taskId,
-      sessionKey: 'test-session-key',
-      agentId: opts.agentId,
-      startedAt: new Date().toISOString(),
-      status: 'running',
-    };
-  };
   testingGlobals.__nexumCliSendMessage = async () => {};
 
   const { runSpawn } = await import(`../commands/spawn.ts?t=${Date.now()}`);
-  await runSpawn(taskId, projectDir);
+  const payload = await runSpawn(taskId, projectDir);
 
-  assert.equal(spawnCalls.length, 1);
-  assert.equal(spawnCalls[0]?.agentId, 'cc-frontend', 'agentId should match contract.generator');
-  assert.equal(spawnCalls[0]?.taskId, taskId);
+  assert.equal(payload.agentId, 'cc-frontend', 'agentId should match contract.generator');
+  assert.equal(payload.taskId, taskId);
   assert.ok(
-    spawnCalls[0]?.promptFile.includes(taskId),
+    payload.promptFile.includes(taskId),
     'promptFile should contain taskId'
   );
   assert.ok(
-    (await readFile(spawnCalls[0]?.promptFile ?? '', 'utf8')).includes('Test Task'),
+    (await readFile(payload.promptFile, 'utf8')).includes('Test Task'),
     'prompt file should contain task name'
   );
 
-  // Verify task was updated with session key
+  // Verify task was marked running
   const tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
-  ) as { tasks: Array<{ id: string; acp_session_key?: string; status?: string }> };
+  ) as { tasks: Array<{ id: string; started_at?: string; status?: string }> };
   const updatedTask = tasksRaw.tasks.find((t) => t.id === taskId);
-  assert.equal(updatedTask?.acp_session_key, 'test-session-key');
+  assert.equal(updatedTask?.status, 'running');
+  assert.ok(updatedTask?.started_at);
 
-  delete testingGlobals.__nexumCliSpawnAcpSession;
   delete testingGlobals.__nexumCliSendMessage;
 });
 
@@ -155,7 +140,7 @@ test('runComplete with pass marks task done and unlocks blocked downstream tasks
 
 // ─── C4: complete fail with iteration < max_iterations triggers retry ───
 
-test('runComplete with fail and iteration < max_iterations triggers retry spawn', async () => {
+test('runComplete with fail and iteration < max_iterations returns retry payload', async () => {
   const taskId = 'TEST-001';
   const projectDir = await setupProject([
     {
@@ -169,25 +154,16 @@ test('runComplete with fail and iteration < max_iterations triggers retry spawn'
     },
   ]);
 
-  const spawnCalls: SpawnOptions[] = [];
-  testingGlobals.__nexumCliSpawnAcpSession = async (opts) => {
-    spawnCalls.push(opts);
-    return {
-      taskId: opts.taskId,
-      sessionKey: 'retry-session-key',
-      agentId: opts.agentId,
-      startedAt: new Date().toISOString(),
-      status: 'running',
-    };
-  };
   testingGlobals.__nexumCliSendMessage = async () => {};
 
   const { runComplete } = await import(`../commands/complete.ts?t2=${Date.now()}`);
-  await runComplete(taskId, 'fail', projectDir);
+  const result = await runComplete(taskId, 'fail', projectDir);
 
-  assert.equal(spawnCalls.length, 1, 'spawnAcpSession should be called once for retry');
-  assert.equal(spawnCalls[0]?.agentId, 'cc-frontend', 'retry should use contract.generator');
-  assert.equal(spawnCalls[0]?.taskId, taskId);
+  assert.equal(result.action, 'retry');
+  assert.equal(result.retryPayload?.agentId, 'cc-frontend', 'retry should use contract.generator');
+  assert.equal(result.retryPayload?.taskId, taskId);
+  assert.equal(result.retryPayload?.nextIteration, 1);
+  assert.ok(result.retryPayload?.promptFile.includes(`${taskId}-retry-`));
 
   const tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
@@ -197,7 +173,48 @@ test('runComplete with fail and iteration < max_iterations triggers retry spawn'
   assert.equal(retried?.status, 'running', 'task should be running after retry');
   assert.equal(retried?.iteration, 1, 'iteration should be incremented to 1');
 
-  delete testingGlobals.__nexumCliSpawnAcpSession;
+  delete testingGlobals.__nexumCliSendMessage;
+});
+
+test('runComplete auto-archives done tasks once the active list exceeds 20 done items', async () => {
+  const taskId = 'TEST-021';
+  const projectDir = await setupProject(
+    Array.from({ length: 21 }, (_, index) => {
+      const id = `TEST-${String(index + 1).padStart(3, '0')}`;
+      return {
+        id,
+        name: `Task ${id}`,
+        status: id === taskId ? 'running' : 'done',
+        batch: 'batch-a',
+        contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+        depends_on: [],
+        iteration: 0,
+        started_at: new Date(Date.now() - 5000).toISOString(),
+      };
+    }),
+    CONTRACT_YAML.replace(/^id: TEST-001$/m, `id: ${taskId}`),
+    taskId
+  );
+
+  testingGlobals.__nexumCliSendMessage = async () => {};
+
+  const { runComplete } = await import(`../commands/complete.ts?archive=${Date.now()}`);
+  const result = await runComplete(taskId, 'pass', projectDir);
+
+  assert.equal(result.action, 'done');
+
+  const activeTasksRaw = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string }> };
+  assert.equal(activeTasksRaw.tasks.length, 0, 'done tasks should be removed from active tasks');
+
+  const archiveDate = new Date().toISOString().slice(0, 10);
+  const archivedTasks = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'history', `${archiveDate}.json`), 'utf8')
+  ) as Array<{ id: string; status: string }>;
+  assert.equal(archivedTasks.length, 21);
+  assert.ok(archivedTasks.every((task) => task.status === 'done'));
+
   delete testingGlobals.__nexumCliSendMessage;
 });
 
@@ -233,4 +250,64 @@ test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', asyn
   assert.equal(payload.agentId, 'eval', 'agentId should be contract.evaluator');
 
   delete testingGlobals.__nexumCliSendMessage;
+});
+
+test('runStatus reports batch progress using currentBatch', async () => {
+  const taskId = 'TEST-001';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'Alpha done',
+      status: 'done',
+      batch: 'batch-a',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+    },
+    {
+      id: 'TEST-002',
+      name: 'Alpha pending',
+      status: 'pending',
+      batch: 'batch-a',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+    },
+    {
+      id: 'TEST-003',
+      name: 'Beta done',
+      status: 'done',
+      batch: 'batch-b',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+    },
+  ]);
+
+  await writeFile(
+    path.join(projectDir, 'nexum', 'active-tasks.json'),
+    JSON.stringify(
+      {
+        currentBatch: 'batch-a',
+        tasks: JSON.parse(
+          await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+        ).tasks,
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args.join(' '));
+  };
+
+  try {
+    const { runStatus } = await import(`../commands/status.ts?status=${Date.now()}`);
+    await runStatus(projectDir);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(logs.some((line) => line.includes('📊 batch-a: 1/2  |  总体: 2/3')));
 });

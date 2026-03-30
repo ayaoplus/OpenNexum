@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 type ExecaResult = {
   stdout: string;
@@ -38,6 +39,11 @@ function createExecaMock(results: ExecaResult[]) {
 
   return { calls, execaMock };
 }
+
+const cliEntryPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../cli/dist/index.js"
+);
 
 test("spawnAcpSession constructs the expected openclaw command and updates active-tasks.json", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-spawn-"));
@@ -89,7 +95,7 @@ test("spawnAcpSession constructs the expected openclaw command and updates activ
 
   assert.equal(record.sessionKey, "agent:codex:acp:123");
   assert.equal(record.status, "running");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0]?.command, "openclaw");
   assert.deepEqual(calls[0]?.args, [
     "sessions",
@@ -114,6 +120,15 @@ test("spawnAcpSession constructs the expected openclaw command and updates activ
     "exec",
     "-f",
     path.join(projectDir, "prompt.md")
+  ]);
+  assert.equal(calls[1]?.command, process.execPath);
+  assert.deepEqual(calls[1]?.args, [
+    cliEntryPath,
+    "track",
+    "NX-002",
+    "agent:codex:acp:123",
+    "--project",
+    projectDir
   ]);
 
   const persisted = JSON.parse(await readFile(activeTasksPath, "utf8")) as {
@@ -157,12 +172,27 @@ test("spawnAcpSession infers cliName from agentId prefix when agentCli is omitte
       exitCode: 0
     },
     {
+      stdout: "",
+      stderr: "",
+      exitCode: 0
+    },
+    {
       stdout: JSON.stringify({ status: "accepted", childSessionKey: "agent:claude:acp:202" }),
       stderr: "",
       exitCode: 0
     },
     {
+      stdout: "",
+      stderr: "",
+      exitCode: 0
+    },
+    {
       stdout: JSON.stringify({ status: "accepted", childSessionKey: "agent:codex:acp:203" }),
+      stderr: "",
+      exitCode: 0
+    },
+    {
+      stdout: "",
       stderr: "",
       exitCode: 0
     }
@@ -188,9 +218,13 @@ test("spawnAcpSession infers cliName from agentId prefix when agentCli is omitte
     });
   }
 
-  assert.equal(calls.length, 3);
+  const spawnCalls = calls.filter((call) => call.command === "openclaw");
+  const trackCalls = calls.filter((call) => call.command === process.execPath);
+
+  assert.equal(spawnCalls.length, 3);
+  assert.equal(trackCalls.length, 3);
   assert.deepEqual(
-    calls.map((call) => call.args.slice(-10)),
+    spawnCalls.map((call) => call.args.slice(-10)),
     cases.map((testCase, index) => [
       "acpx",
       "-s",
@@ -203,6 +237,35 @@ test("spawnAcpSession infers cliName from agentId prefix when agentCli is omitte
       "-f",
       path.join(projectDir, `prompt-${index}.md`)
     ])
+  );
+  assert.deepEqual(
+    trackCalls.map((call) => call.args),
+    [
+      [
+        cliEntryPath,
+        "track",
+        "NX-003",
+        "agent:codex:acp:201",
+        "--project",
+        projectDir
+      ],
+      [
+        cliEntryPath,
+        "track",
+        "NX-003",
+        "agent:claude:acp:202",
+        "--project",
+        projectDir
+      ],
+      [
+        cliEntryPath,
+        "track",
+        "NX-003",
+        "agent:codex:acp:203",
+        "--project",
+        projectDir
+      ]
+    ]
   );
 
   delete testingGlobals.__nexumSpawnExeca;
