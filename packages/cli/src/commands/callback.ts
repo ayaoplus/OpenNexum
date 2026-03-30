@@ -43,6 +43,14 @@ interface CallbackOptions {
 }
 
 type DispatchRole = 'generator' | 'evaluator';
+type ContractWithAgentCompat = {
+  generator: string;
+  evaluator: string;
+  agent?: {
+    generator?: string;
+    evaluator?: string;
+  };
+};
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
@@ -63,7 +71,7 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
 /** Resolve the actual model name from config agents map */
 function resolveModelName(config: NexumConfig, agentId: string, reportedModel?: string): string {
   // If generator reported a standard model name, use it
-  if (reportedModel && !['codex', 'claude', 'auto', 'gpt-5', 'gpt5'].includes(reportedModel.toLowerCase())) {
+  if (reportedModel && !['codex', 'claude', 'auto'].includes(reportedModel.toLowerCase())) {
     return reportedModel;
   }
   // Otherwise look up from config
@@ -169,6 +177,14 @@ function summarizeResponse(body: string): string {
   return normalized.length > 200 ? `${normalized.slice(0, 197)}...` : normalized;
 }
 
+function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.generator ?? contract.generator;
+}
+
+function getEvaluatorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.evaluator ?? contract.evaluator;
+}
+
 // ─── Generator Callback ──────────────────────────────────────────────────────
 
 async function runGeneratorCallback(taskId: string, options: CallbackOptions): Promise<void> {
@@ -178,10 +194,11 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 
   const contract = await loadContract(projectDir, task.contract_path);
   const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined } as NexumConfig));
+  const generatorAgentId = getGeneratorAgentId(contract);
 
   const inputTokens = parseInt(options.inputTokens ?? '0', 10) || 0;
   const outputTokens = parseInt(options.outputTokens ?? '0', 10) || 0;
-  const model = resolveModelName(config, contract.generator, options.model);
+  const model = resolveModelName(config, generatorAgentId, options.model);
 
   const currentHead = await getHeadCommit(projectDir).catch(() => '');
   const hasRemote = !!(config.git?.remote);
@@ -205,7 +222,7 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
       : formatGeneratorDone({
           taskId,
           taskName: task.name,
-          agent: contract.generator,
+          agent: generatorAgentId,
           model,
           inputTokens,
           outputTokens,
@@ -245,6 +262,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   const contract = await loadContract(projectDir, task.contract_path);
   const config = await loadConfig(projectDir).catch(() => ({ notify: undefined } as NexumConfig));
   const target = config.notify?.target;
+  const evaluatorAgentId = getEvaluatorAgentId(contract);
 
   const evalResultPath = resolvePath(projectDir, task.eval_result_path);
   const verdict = await readEvalVerdict(evalResultPath);
@@ -252,7 +270,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   const iteration = task.iteration ?? 0;
   const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
   const elapsedMs = Date.now() - startedAt;
-  const evalModel = resolveModelName(config, contract.evaluator);
+  const evalModel = resolveModelName(config, evaluatorAgentId);
 
   // ── Step 1+2: Run complete ──
   const result = await runComplete(taskId, verdict, projectDir);
@@ -268,7 +286,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
       const msg = formatReviewPassed({
         taskId,
         taskName: contract.name,
-        evaluator: contract.evaluator,
+        evaluator: evaluatorAgentId,
         model: evalModel,
         elapsedMs,
         iteration,
@@ -286,7 +304,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
       const msg = formatReviewFailed({
         taskId,
         taskName: contract.name,
-        evaluator: contract.evaluator,
+        evaluator: evaluatorAgentId,
         model: evalModel,
         iteration,
         passCount: evalSummary.passCount,
@@ -304,7 +322,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
       const msg = formatEscalation({
         taskId,
         taskName: contract.name,
-        evaluator: contract.evaluator,
+        evaluator: evaluatorAgentId,
         history,
         retryCommand: `nexum retry ${taskId} --force`,
       });

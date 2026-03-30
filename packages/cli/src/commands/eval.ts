@@ -5,6 +5,23 @@ import { parseContract, getTask, updateTask, TaskStatus, loadConfig, resolveAgen
 import { renderEvaluatorPrompt } from '@nexum/prompts';
 import type { SpawnPayload } from './spawn.js';
 
+type ContractWithAgentCompat = {
+  generator: string;
+  evaluator: string;
+  agent?: {
+    generator?: string;
+    evaluator?: string;
+  };
+};
+
+function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.generator ?? contract.generator;
+}
+
+function getEvaluatorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.evaluator ?? contract.evaluator;
+}
+
 export async function runEval(taskId: string, projectDir: string): Promise<SpawnPayload> {
   const task = await getTask(projectDir, taskId);
   if (!task) {
@@ -15,6 +32,11 @@ export async function runEval(taskId: string, projectDir: string): Promise<Spawn
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
+  const contractWithAgents = {
+    ...contract,
+    generator: getGeneratorAgentId(contract),
+    evaluator: getEvaluatorAgentId(contract),
+  };
 
   const iteration = task.iteration ?? 0;
   const evalResultPath = path.join(
@@ -26,7 +48,7 @@ export async function runEval(taskId: string, projectDir: string): Promise<Spawn
   );
 
   const promptContent = renderEvaluatorPrompt({
-    contract,
+    contract: contractWithAgents,
     task: { id: task.id, name: task.name },
     gitCommitCmd: '',
     evalResultPath,
@@ -44,13 +66,13 @@ export async function runEval(taskId: string, projectDir: string): Promise<Spawn
   });
 
   const config = await loadConfig(projectDir);
-  const agentCli = resolveAgentCli(config, contract.evaluator);
+  const agentCli = resolveAgentCli(config, contractWithAgents.evaluator);
   const label = `nexum-${taskId.toLowerCase()}-eval`;
 
   return {
     taskId,
-    taskName: contract.name,
-    agentId: contract.evaluator,
+    taskName: contractWithAgents.name,
+    agentId: contractWithAgents.evaluator,
     agentCli,
     promptFile,
     promptContent,

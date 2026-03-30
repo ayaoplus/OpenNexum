@@ -40,6 +40,23 @@ export interface SpawnPayload {
   cwd: string;
 }
 
+type ContractWithAgentCompat = {
+  generator: string;
+  evaluator: string;
+  agent?: {
+    generator?: string;
+    evaluator?: string;
+  };
+};
+
+function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.generator ?? contract.generator;
+}
+
+function getEvaluatorAgentId(contract: ContractWithAgentCompat): string {
+  return contract.agent?.evaluator ?? contract.evaluator;
+}
+
 export async function runSpawn(taskId: string, projectDir: string): Promise<SpawnPayload> {
   const task = await getTask(projectDir, taskId);
   if (!task) {
@@ -50,6 +67,8 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
+  const generatorAgentId = getGeneratorAgentId(contract);
+  const evaluatorAgentId = getEvaluatorAgentId(contract);
 
   const iteration = task.iteration ?? 0;
   const evalResultPath = path.join(
@@ -61,10 +80,11 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   );
 
   const config = await loadConfig(projectDir);
+  const contractWithAgents = { ...contract, generator: generatorAgentId, evaluator: evaluatorAgentId };
   const resolvedContract =
-    contract.generator === 'auto' || contract.evaluator === 'auto'
-      ? { ...contract, ...resolveAgents(contract, config) }
-      : contract;
+    generatorAgentId === 'auto' || evaluatorAgentId === 'auto'
+      ? { ...contractWithAgents, ...resolveAgents(contractWithAgents, config) }
+      : contractWithAgents;
   // If git.remote is explicitly set to empty string, skip push; otherwise default to 'origin'
   const gitRemoteRaw = config.git?.remote;
   const gitRemote = gitRemoteRaw === '' ? '' : (gitRemoteRaw ?? 'origin');
@@ -132,11 +152,14 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
+  const generatorAgentId = getGeneratorAgentId(contract);
+  const evaluatorAgentId = getEvaluatorAgentId(contract);
   const config = await loadConfig(projectDir);
+  const contractWithAgents = { ...contract, generator: generatorAgentId, evaluator: evaluatorAgentId };
   const resolvedContract =
-    contract.generator === 'auto' || contract.evaluator === 'auto'
-      ? { ...contract, ...resolveAgents(contract, config) }
-      : contract;
+    generatorAgentId === 'auto' || evaluatorAgentId === 'auto'
+      ? { ...contractWithAgents, ...resolveAgents(contractWithAgents, config) }
+      : contractWithAgents;
 
   const iteration = task.iteration ?? 0;
   const evalResultPath = path.join(
