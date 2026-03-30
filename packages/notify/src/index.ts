@@ -1,16 +1,24 @@
 export * from "./types.js";
 export { sendMessage } from "./telegram.js";
 export {
-  // Primary names (use these)
+  formatDispatch,
   formatGeneratorDone,
   formatReviewPassed,
   formatReviewFailed,
   formatEscalation,
+  formatCommitMissing,
+  formatHealthAlert,
   formatBatchDone,
-  // Aliases (backward compat, prefer primary names above)
-  formatComplete,
-  formatFail,
-  formatDispatch,
-  formatGeneratorComplete,
-  formatDispatchNotification,
+} from "./templates.js";
+export type {
+  CriterionResult,
+  EscalationHistoryItem,
+  DispatchOptions,
+  GeneratorDoneOptions,
+  ReviewPassedOptions,
+  ReviewFailedOptions,
+  EscalationOptions,
+  CommitMissingOptions,
+  StuckTaskInfo,
+  BatchDoneOptions,
 } from "./templates.js";

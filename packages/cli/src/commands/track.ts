@@ -7,6 +7,7 @@ import {
   parseContract,
 } from '@nexum/core';
 import { formatDispatch, sendMessage } from '@nexum/notify';
+import type { DispatchOptions } from '@nexum/notify';
 import { loadConfig } from '@nexum/core';
 import path from 'node:path';
 
@@ -45,14 +46,17 @@ export async function runTrack(
       const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const progress = `${doneCount}/${tasks.length}`;
 
-      const msg = formatDispatch(
+      const config = await loadConfig(projectDir);
+      const agentConfig = config.agents?.[contract.generator];
+      const msg = formatDispatch({
         taskId,
-        contract.name,
-        contract.generator,
-        contract.scope.files.length,
-        contract.deliverables.length,
-        progress
-      );
+        taskName: contract.name,
+        agent: contract.generator,
+        model: agentConfig?.model,
+        scopeCount: contract.scope.files.length,
+        deliverablesCount: contract.deliverables.length,
+        progress,
+      });
       await sendMessage(target, msg);
     } catch {
       // Notification failure is non-fatal

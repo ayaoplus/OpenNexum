@@ -1,43 +1,25 @@
+// ─── OpenNexum 通知模板 ─────────────────────────────────────────────────────
+//
+// 所有通知统一走模板函数，不使用内联字符串。
+// 每个通知类型一个函数，不设 alias。
+
 const SEP = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
 
-export interface NotifyCriterionResult {
+// ─── Shared Types ────────────────────────────────────────────────────────────
+
+export interface CriterionResult {
   id: string;
   passed: boolean;
   reason?: string;
 }
 
-export interface GeneratorCompleteOptions {
-  model?: string;
-  tokenText?: string;
-  scopeFiles?: string[];
-  inputTokens?: number;
-  outputTokens?: number;
-  commitHash?: string;
-  iteration?: number;
-}
-
-export interface ReviewPassOptions {
-  evaluatorName?: string;
-  batchProgress?: string;
-}
-
-export interface ReviewFailOptions {
-  evaluatorName?: string;
-  criteriaResults?: NotifyCriterionResult[];
-  autoRetryHint?: string;
-}
-
 export interface EscalationHistoryItem {
   iteration: number;
   feedback: string;
-  criteriaResults?: NotifyCriterionResult[];
+  criteriaResults?: CriterionResult[];
 }
 
-export interface EscalationOptions {
-  evaluatorName?: string;
-  reason?: string;
-  note?: string;
-}
+// ─── Shared Helpers ──────────────────────────────────────────────────────────
 
 function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -45,276 +27,275 @@ function formatElapsed(ms: number): string {
   if (secs < 60) return `${secs}s`;
   const mins = Math.floor(secs / 60);
   const rem = secs % 60;
-  return `${mins}m${rem}s`;
+  return rem > 0 ? `${mins}m${rem}s` : `${mins}m`;
 }
 
 function shortHash(hash: string | undefined): string {
   return hash?.trim() ? hash.trim().slice(0, 7) : 'unknown';
 }
 
-function formatCriteriaLines(criteriaResults: NotifyCriterionResult[]): string[] {
-  if (criteriaResults.length === 0) {
-    return ['(none)'];
-  }
+function formatTokens(input: number, output: number): string | null {
+  if (input === 0 && output === 0) return null;
+  return `${input.toLocaleString('en-US')} in / ${output.toLocaleString('en-US')} out`;
+}
 
-  return criteriaResults.map((criterion) => {
-    const icon = criterion.passed ? '✅' : '❌';
-    const reason = criterion.reason?.trim() || (criterion.passed ? '通过' : '未提供原因');
-    return `${icon} ${criterion.id}: ${reason}`;
+function formatCriteriaLines(results: CriterionResult[]): string[] {
+  if (results.length === 0) return ['（无）'];
+  return results.map((c) => {
+    const icon = c.passed ? '✅' : '❌';
+    const reason = c.reason?.trim() || (c.passed ? '通过' : '未提供原因');
+    return `  ${icon} ${c.id}: ${reason}`;
   });
 }
 
-function formatTokenLine(options: GeneratorCompleteOptions): string | null {
-  if (options.tokenText?.trim()) {
-    return `🪙 Token: ${options.tokenText.trim()}`;
-  }
-
-  const inputTokens = options.inputTokens ?? 0;
-  const outputTokens = options.outputTokens ?? 0;
-  if (inputTokens === 0 && outputTokens === 0) {
-    return null;
-  }
-
-  return `🪙 Token: ${inputTokens.toLocaleString('en-US')} in / ${outputTokens.toLocaleString('en-US')} out`;
-}
-
-function formatProgressLine(progress: string, batchProgress?: string): string {
+function formatProgress(progress: string, batchProgress?: string): string {
   return batchProgress
     ? `📊 ${batchProgress}  |  总体: ${progress}`
     : `📊 总体: ${progress}`;
 }
 
-export function formatGeneratorDone(
-  taskId: string,
-  taskName: string,
-  agentName: string,
-  options: GeneratorCompleteOptions = {}
-): string {
-  const tokenLine = formatTokenLine(options);
+// ─── ① 派发任务 ──────────────────────────────────────────────────────────────
 
+export interface DispatchOptions {
+  taskId: string;
+  taskName: string;
+  agent: string;
+  model?: string;
+  scopeCount: number;
+  deliverablesCount: number;
+  progress: string;
+  batchProgress?: string;
+}
+
+export function formatDispatch(opts: DispatchOptions): string {
   return [
-    `🔨 [1/2] 代码已提交 — ${taskId}`,
+    `🚀 派发任务 — ${opts.taskId}`,
     SEP,
-    `📋 任务: ${taskName}`,
-    `🤖 Agent: ${agentName}`,
-    ...(options.scopeFiles ? [`📁 Scope: ${options.scopeFiles.length} 个文件`] : []),
-    ...(options.model ? [`🧠 模型: ${options.model}`] : []),
-    ...(tokenLine ? [tokenLine] : []),
-    `🧾 Commit: ${shortHash(options.commitHash)}`,
-    `🔁 迭代: 第${(options.iteration ?? 0) + 1}次`,
-    '⏳ 状态: 等待审查',
+    `📋 任务内容: ${opts.taskName}`,
+    `🤖 Agent: ${opts.agent}`,
+    ...(opts.model ? [`🧠 模型: ${opts.model}`] : []),
+    `📁 Scope: ${opts.scopeCount} 个文件`,
+    `📦 Deliverables: ${opts.deliverablesCount} 项`,
+    formatProgress(opts.progress, opts.batchProgress),
     SEP,
   ].join('\n');
 }
 
-export function formatGeneratorComplete(
-  taskId: string,
-  taskName: string,
-  agentName: string,
-  options: GeneratorCompleteOptions = {}
-): string {
-  return formatGeneratorDone(taskId, taskName, agentName, options);
+// ─── ② 代码编写完成 [1/2] ────────────────────────────────────────────────────
+
+export interface GeneratorDoneOptions {
+  taskId: string;
+  taskName: string;
+  agent: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  scopeFiles?: string[];
+  commitHash?: string;
+  commitMessage?: string;
+  iteration?: number;
+  elapsedMs?: number;
 }
 
-export function formatDispatchNotification(
-  taskId: string,
-  taskName: string,
-  agentOrSessionName: string,
-  scopeCount: number,
-  progress: string,
-  deliverablesCount?: number
-): string {
+export function formatGeneratorDone(opts: GeneratorDoneOptions): string {
+  const tokenStr = formatTokens(opts.inputTokens ?? 0, opts.outputTokens ?? 0);
+
   return [
-    `🚀 派发任务 — ${taskId}`,
+    `🔨 [1/2] 代码编写完成 — ${opts.taskId}`,
     SEP,
-    `📋 任务: ${taskName}`,
-    `🤖 Agent/Session: ${agentOrSessionName}`,
-    `📁 Scope: ${scopeCount} 个文件`,
-    ...(typeof deliverablesCount === 'number' ? [`📦 Deliverables: ${deliverablesCount} 项`] : []),
-    `📊 进度: ${progress}`,
+    `📋 任务内容: ${opts.taskName}`,
+    `🤖 Agent: ${opts.agent}`,
+    ...(opts.model ? [`🧠 模型: ${opts.model}`] : []),
+    ...(opts.scopeFiles ? [`📁 Scope: ${opts.scopeFiles.length} 个文件`] : []),
+    ...(tokenStr ? [`🪙 Token: ${tokenStr}`] : []),
+    ...(opts.elapsedMs != null ? [`⏱️ 用时: ${formatElapsed(opts.elapsedMs)}`] : []),
+    `🧾 Commit: ${shortHash(opts.commitHash)}`,
+    ...(opts.commitMessage ? [`💬 提交信息: ${opts.commitMessage}`] : []),
+    `🔁 迭代: 第${(opts.iteration ?? 0) + 1}次`,
+    '⏳ 等待代码审查',
     SEP,
   ].join('\n');
 }
 
-export function formatReviewPassed(
-  taskId: string,
-  taskName: string,
-  evaluatorName: string,
-  elapsedMs: number,
-  iteration: number,
-  passCount: number,
-  totalCount: number,
-  unlockedTasks: string[],
-  progress: string,
-  options: ReviewPassOptions = {}
-): string {
+// ─── ③ 审查通过 [2/2] ────────────────────────────────────────────────────────
+
+export interface ReviewPassedOptions {
+  taskId: string;
+  taskName: string;
+  evaluator: string;
+  model?: string;
+  elapsedMs: number;
+  iteration: number;
+  passCount: number;
+  totalCount: number;
+  unlockedTasks: string[];
+  progress: string;
+  batchProgress?: string;
+}
+
+export function formatReviewPassed(opts: ReviewPassedOptions): string {
   return [
-    `✅ [2/2] 审查通过 — ${taskId}`,
+    `✅ [2/2] 审查通过 — ${opts.taskId}`,
     SEP,
-    `📋 任务: ${taskName}`,
-    `🧪 Evaluator: ${evaluatorName}`,
-    `⏱️ 用时: ${formatElapsed(elapsedMs)}`,
-    `🔁 迭代: 第${iteration + 1}次`,
-    `🎯 Criteria: ${passCount}/${totalCount}`,
-    `🔓 解锁任务: ${unlockedTasks.length > 0 ? unlockedTasks.join(', ') : '无'}`,
-    formatProgressLine(progress, options.batchProgress),
+    `📋 任务内容: ${opts.taskName}`,
+    `🤖 Agent: ${opts.evaluator}`,
+    ...(opts.model ? [`🧠 模型: ${opts.model}`] : []),
+    `⏱️ 用时: ${formatElapsed(opts.elapsedMs)}`,
+    `🔁 迭代: 第${opts.iteration + 1}次`,
+    `🎯 Criteria: ${opts.passCount}/${opts.totalCount}`,
+    `🔓 解锁任务: ${opts.unlockedTasks.length > 0 ? opts.unlockedTasks.join(', ') : '无'}`,
+    formatProgress(opts.progress, opts.batchProgress),
     SEP,
   ].join('\n');
 }
 
-export function formatReviewFailed(
-  taskId: string,
-  taskName: string,
-  iteration: number,
-  passCount: number,
-  totalCount: number,
-  criteriaResults: NotifyCriterionResult[],
-  feedbackSummary: string,
-  options: ReviewFailOptions = {}
-): string {
-  const failCount = criteriaResults.filter((criterion) => !criterion.passed).length;
+// ─── ④ 审查失败 [2/2] ────────────────────────────────────────────────────────
+
+export interface ReviewFailedOptions {
+  taskId: string;
+  taskName: string;
+  evaluator: string;
+  model?: string;
+  iteration: number;
+  passCount: number;
+  totalCount: number;
+  criteriaResults: CriterionResult[];
+  feedback: string;
+  autoRetryHint?: string;
+}
+
+export function formatReviewFailed(opts: ReviewFailedOptions): string {
+  const failCount = opts.criteriaResults.filter((c) => !c.passed).length;
 
   return [
-    `❌ [2/2] 审查失败 — ${taskId} (第${iteration + 1}次)`,
+    `❌ [2/2] 审查失败 — ${opts.taskId} (第${opts.iteration + 1}次)`,
     SEP,
-    `📋 任务: ${taskName}`,
-    `🧪 Evaluator: ${options.evaluatorName ?? 'evaluator'}`,
-    `🎯 Criteria: ${passCount}/${totalCount} 通过，${failCount} 失败`,
+    `📋 任务内容: ${opts.taskName}`,
+    `🤖 Agent: ${opts.evaluator}`,
+    ...(opts.model ? [`🧠 模型: ${opts.model}`] : []),
+    `🎯 Criteria: ${opts.passCount}/${opts.totalCount} 通过，${failCount} 失败`,
     '📌 Criteria 结果:',
-    ...formatCriteriaLines(criteriaResults),
-    `💬 Feedback: ${feedbackSummary || '无'}`,
-    `🔄 自动重试: ${options.autoRetryHint ?? '系统将自动触发下一次 retry'}`,
+    ...formatCriteriaLines(opts.criteriaResults),
+    `💬 Feedback: ${opts.feedback || '无'}`,
+    `🔄 ${opts.autoRetryHint ?? '系统将自动触发下一次 retry'}`,
     SEP,
   ].join('\n');
 }
 
-export function formatEscalation(
-  taskId: string,
-  taskName: string,
-  history: EscalationHistoryItem[],
-  retryCommand: string,
-  options: EscalationOptions = {}
-): string {
+// ─── ⑤ 任务升级 ──────────────────────────────────────────────────────────────
+
+export interface EscalationOptions {
+  taskId: string;
+  taskName: string;
+  evaluator: string;
+  reason?: string;
+  note?: string;
+  history: EscalationHistoryItem[];
+  retryCommand: string;
+}
+
+export function formatEscalation(opts: EscalationOptions): string {
   const historyLines =
-    history.length > 0
-      ? history.flatMap((entry) => [
-          `• 第${entry.iteration + 1}次: ${entry.feedback || '无详细反馈'}`,
-          ...formatCriteriaLines(entry.criteriaResults ?? []).map((line) => `  ${line}`),
+    opts.history.length > 0
+      ? opts.history.flatMap((entry) => [
+          `  • 第${entry.iteration + 1}次: ${entry.feedback || '无详细反馈'}`,
+          ...formatCriteriaLines(entry.criteriaResults ?? []).map((l) => `  ${l}`),
         ])
-      : ['(none)'];
+      : ['  （无）'];
 
   return [
-    `🚨 任务升级 — ${taskId}`,
+    `🚨 任务升级 — ${opts.taskId}`,
     SEP,
-    `📋 任务: ${taskName}`,
-    `🧪 Evaluator: ${options.evaluatorName ?? 'evaluator'}`,
-    ...(options.reason ? [`🧯 升级原因: ${options.reason}`] : []),
-    ...(options.note ? [`📝 备注: ${options.note}`] : []),
-    '🧾 历史 fail 原因:',
+    `📋 任务内容: ${opts.taskName}`,
+    `🤖 Agent: ${opts.evaluator}`,
+    ...(opts.reason ? [`🧯 升级原因: ${opts.reason}`] : []),
+    ...(opts.note ? [`📝 备注: ${opts.note}`] : []),
+    '🧾 历史失败原因:',
     ...historyLines,
-    `🛠 可用命令: ${retryCommand}`,
+    `🛠 可用命令: ${opts.retryCommand}`,
     SEP,
   ].join('\n');
 }
 
-export function formatDispatch(
-  taskId: string,
-  taskName: string,
-  agentId: string,
-  scopeCount: number,
-  deliverablesCount: number,
-  progress: string
-): string {
-  return formatDispatchNotification(
-    taskId,
-    taskName,
-    agentId,
-    scopeCount,
-    progress,
-    deliverablesCount
-  );
+// ─── ⑥ commit 缺失警告 ──────────────────────────────────────────────────────
+
+export interface CommitMissingOptions {
+  taskId: string;
+  taskName: string;
+  headHash: string;
 }
 
-export function formatComplete(
-  taskId: string,
-  taskName: string,
-  elapsedMs: number,
-  iteration: number,
-  passCount: number,
-  totalCount: number,
-  unlockedTasks: string[],
-  progress: string,
-  options: ReviewPassOptions = {}
-): string {
-  return formatReviewPassed(
-    taskId,
-    taskName,
-    options.evaluatorName ?? 'evaluator',
-    elapsedMs,
-    iteration,
-    passCount,
-    totalCount,
-    unlockedTasks,
-    progress,
-    options
-  );
+export function formatCommitMissing(opts: CommitMissingOptions): string {
+  return [
+    `⚠️ 代码编写完成，但未检测到新 commit`,
+    SEP,
+    `📋 任务内容: ${opts.taskName}`,
+    `🆔 ID: ${opts.taskId}`,
+    `📍 HEAD: \`${shortHash(opts.headHash)}\`（与 base_commit 相同）`,
+    '❗ 请检查 generator 是否执行了 git commit + push',
+    SEP,
+  ].join('\n');
 }
 
-export function formatFail(
-  taskId: string,
-  taskName: string,
-  iteration: number,
-  passCount: number,
-  totalCount: number,
-  failCount: number,
-  failedCriteria: string[],
-  feedbackExcerpt: string,
-  options: ReviewFailOptions = {}
-): string {
-  const criteriaResults =
-    options.criteriaResults && options.criteriaResults.length > 0
-      ? options.criteriaResults
-      : [
-          ...failedCriteria.map((criterionId) => ({
-            id: criterionId,
-            passed: false,
-            reason: '未通过',
-          })),
-          ...Array.from({ length: Math.max(passCount - Math.max(0, failCount), 0) }, (_, index) => ({
-            id: `PASS-${index + 1}`,
-            passed: true,
-            reason: '通过',
-          })),
-        ];
+// ─── ⑦ 卡死告警 ──────────────────────────────────────────────────────────────
 
-  return formatReviewFailed(
-    taskId,
-    taskName,
-    iteration,
-    passCount,
-    totalCount,
-    criteriaResults,
-    feedbackExcerpt,
-    options
-  );
+export interface StuckTaskInfo {
+  id: string;
+  name: string;
+  status: string;
+  stuckMinutes: number;
+  sessionAlive: boolean | null;
 }
 
-export function formatBatchDone(
-  projectName: string,
-  tasks: Array<{ taskId: string; taskName: string; status: 'done' | 'fail'; elapsedMs: number }>
-): string {
-  const taskLines = tasks
-    .map((task) => {
-      const icon = task.status === 'done' ? '✅' : '❌';
-      return `${icon} ${task.taskId} — ${task.taskName} (${formatElapsed(task.elapsedMs)})`;
-    })
-    .join('\n');
+export function formatHealthAlert(stuck: StuckTaskInfo[]): string {
+  const lines = stuck.map((t) => {
+    const sessionTag =
+      t.sessionAlive === true
+        ? '（session 仍在运行）'
+        : t.sessionAlive === false
+        ? '（session 已结束）'
+        : '';
+    return `  🔴 ${t.id} [${t.status}] 已卡 ${t.stuckMinutes} 分钟 ${sessionTag}\n     ${t.name}`;
+  });
 
   return [
-    `🎉 批次完成 — ${projectName}`,
+    `🚨 卡死告警 — ${stuck.length} 个任务疑似卡死`,
     SEP,
-    `📦 任务列表 (${tasks.length}):`,
-    taskLines,
+    ...lines,
+    '',
+    '请检查: nexum status --project <dir>',
+    SEP,
+  ].join('\n');
+}
+
+// ─── ⑧ 批次完成 ──────────────────────────────────────────────────────────────
+
+export interface BatchDoneOptions {
+  batchName: string;
+  tasks: Array<{
+    taskId: string;
+    taskName: string;
+    status: 'done' | 'fail';
+    elapsedMs: number;
+  }>;
+  totalElapsedMs?: number;
+}
+
+export function formatBatchDone(opts: BatchDoneOptions): string {
+  const taskLines = opts.tasks.map((t) => {
+    const icon = t.status === 'done' ? '✅' : '❌';
+    return `  ${icon} ${t.taskId} — ${t.taskName} (${formatElapsed(t.elapsedMs)})`;
+  });
+
+  const doneCount = opts.tasks.filter((t) => t.status === 'done').length;
+
+  return [
+    `🎉 批次完成 — ${opts.batchName}`,
+    SEP,
+    `📊 结果: ${doneCount}/${opts.tasks.length} 通过`,
+    ...(opts.totalElapsedMs != null ? [`⏱️ 总用时: ${formatElapsed(opts.totalElapsedMs)}`] : []),
+    '',
+    ...taskLines,
     SEP,
   ].join('\n');
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Command } from 'commander';
 import { readTasks, TaskStatus, loadConfig } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
-import { sendMessage } from '@nexum/notify';
+import { sendMessage, formatHealthAlert } from '@nexum/notify';
 import {
   readGlobalConfig,
   addProject,
@@ -123,23 +123,8 @@ async function sendAlert(projectDir: string, stuck: StuckTask[]): Promise<void> 
   const target = config.notify?.target;
   if (!target) return;
 
-  const lines = [
-    `🚨 Nexum Health Alert — ${stuck.length} 个任务疑似卡死`,
-    '━━━━━━━━━━━━━━━',
-    ...stuck.map((t) => {
-      const sessionTag =
-        t.sessionAlive === true
-          ? '（ACP session 仍在运行）'
-          : t.sessionAlive === false
-          ? '（ACP session 已结束）'
-          : '';
-      return `🔴 ${t.id} [${t.status}] 已卡 ${t.stuckMinutes} 分钟 ${sessionTag}\n   ${t.name}`;
-    }),
-    '',
-    '请检查任务状态：nexum status --project <dir>',
-  ];
-
-  await sendMessage(target, lines.join('\n'));
+  const msg = formatHealthAlert(stuck);
+  await sendMessage(target, msg);
 }
 
 // ─── Watch (daemon mode, health-only, no dispatch) ───────────────────────────

@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import type { Command } from 'commander';
 import {
@@ -12,17 +14,21 @@ import {
   getHeadCommit,
   parseContract,
   type EvalVerdict,
+  type NexumConfig,
 } from '@nexum/core';
 import {
   formatGeneratorDone,
-  formatComplete,
+  formatReviewPassed,
   formatReviewFailed,
   formatEscalation,
+  formatCommitMissing,
   sendMessage,
 } from '@nexum/notify';
 import { spawnAcpSession } from '@nexum/spawn';
 import { runComplete } from './complete.js';
 import { runSpawn, runSpawnEval } from './spawn.js';
+
+const execFileAsync = promisify(execFile);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -48,13 +54,34 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
   }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Resolve the actual model name from config agents map */
+function resolveModelName(config: NexumConfig, agentId: string, reportedModel?: string): string {
+  // If generator reported a standard model name, use it
+  if (reportedModel && !['codex', 'claude', 'auto', 'gpt-5', 'gpt5'].includes(reportedModel.toLowerCase())) {
+    return reportedModel;
+  }
+  // Otherwise look up from config
+  const agentConfig = config.agents?.[agentId];
+  if (agentConfig?.model) return agentConfig.model;
+  // Fallback: derive from agentId prefix
+  if (agentId.startsWith('codex-')) return 'gpt-5.4';
+  if (agentId.startsWith('claude-')) return 'claude-sonnet-4-6';
+  return reportedModel || 'unknown';
+}
+
+/** Get the latest commit message from git log */
+async function getLastCommitMessage(projectDir: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', projectDir, 'log', '-1', '--pretty=%s'], { encoding: 'utf8' });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
 // ─── Generator Callback ──────────────────────────────────────────────────────
-//
-// Called when a generator (coding agent) finishes its work.
-// Steps:
-//   1. Update task status → generator_done
-//   2. Send notification (code submitted)
-//   3. Auto-dispatch evaluator (best-effort)
 
 async function runGeneratorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
@@ -62,17 +89,19 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
   const contract = await loadContract(projectDir, task.contract_path);
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined }));
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined } as NexumConfig));
 
-  // Parse optional metadata from generator
-  const model = options.model?.trim() || '';
   const inputTokens = parseInt(options.inputTokens ?? '0', 10) || 0;
   const outputTokens = parseInt(options.outputTokens ?? '0', 10) || 0;
+  const model = resolveModelName(config, contract.generator, options.model);
 
-  // Check commit status
   const currentHead = await getHeadCommit(projectDir).catch(() => '');
   const hasRemote = !!(config.git?.remote);
   const commitMissing = hasRemote && task.base_commit && currentHead && currentHead === task.base_commit;
+
+  const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
+  const elapsedMs = Date.now() - startedAt;
+  const commitMessage = commitMissing ? '' : await getLastCommitMessage(projectDir);
 
   // ── Step 1: Update status ──
   await updateTask(projectDir, taskId, {
@@ -84,21 +113,19 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   const target = config.notify?.target;
   if (target) {
     const msg = commitMissing
-      ? [
-          '⚠️ Generator 完成，但未检测到新 commit！',
-          '━━━━━━━━━━━━━━━',
-          `📋 任务: ${task.name}`,
-          `🆔 ID: ${taskId}`,
-          `📍 HEAD: \`${currentHead.slice(0, 7)}\`（与 base_commit 相同）`,
-          '❗ 请检查 generator 是否执行了 git commit + push',
-        ].join('\n')
-      : formatGeneratorDone(taskId, task.name, contract.generator, {
+      ? formatCommitMissing({ taskId, taskName: task.name, headHash: currentHead })
+      : formatGeneratorDone({
+          taskId,
+          taskName: task.name,
+          agent: contract.generator,
           model,
           inputTokens,
           outputTokens,
-          commitHash: currentHead,
-          iteration: task.iteration,
           scopeFiles: contract.scope.files,
+          commitHash: currentHead,
+          commitMessage,
+          iteration: task.iteration,
+          elapsedMs,
         });
 
     await sendMessage(target, msg).catch(() => {});
@@ -122,13 +149,6 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 }
 
 // ─── Evaluator Callback ──────────────────────────────────────────────────────
-//
-// Called when an evaluator finishes reviewing code.
-// Steps:
-//   1. Read eval result (pass/fail/escalated)
-//   2. Run complete → updates status, triggers retry/unlock
-//   3. Send notification (appropriate for verdict)
-//   4. Auto-dispatch next step (retry generator or next pending task)
 
 async function runEvaluatorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
@@ -137,7 +157,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   if (!task.eval_result_path) throw new Error(`Task ${taskId} has no eval_result_path`);
 
   const contract = await loadContract(projectDir, task.contract_path);
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined } as NexumConfig));
   const target = config.notify?.target;
 
   const evalResultPath = resolvePath(projectDir, task.eval_result_path);
@@ -146,44 +166,62 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   const iteration = task.iteration ?? 0;
   const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
   const elapsedMs = Date.now() - startedAt;
+  const evalModel = resolveModelName(config, contract.evaluator);
 
-  // ── Step 1+2: Run complete (status update + unlock/retry/escalate) ──
+  // ── Step 1+2: Run complete ──
   const result = await runComplete(taskId, verdict, projectDir);
 
-  // ── Step 3: Notify (covers ALL scenarios) ──
+  // ── Step 3: Notify ──
   if (target) {
     if (result.action === 'done') {
-      // ✅ Pass
       const tasks = await readTasks(projectDir);
       const overallDone = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const activeBatch = await getActiveBatch(projectDir);
       const batchProgress = activeBatch ? await getBatchProgress(projectDir, activeBatch) : null;
-      const progressStr = batchProgress
-        ? `${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}  |  总体: ${overallDone}/${tasks.length}`
-        : `${overallDone}/${tasks.length}`;
 
-      const msg = formatComplete(taskId, contract.name, elapsedMs, iteration,
-        evalSummary.passCount, evalSummary.totalCount,
-        result.unlockedTasks ?? [], progressStr,
-        { evaluatorName: contract.evaluator });
+      const msg = formatReviewPassed({
+        taskId,
+        taskName: contract.name,
+        evaluator: contract.evaluator,
+        model: evalModel,
+        elapsedMs,
+        iteration,
+        passCount: evalSummary.passCount,
+        totalCount: evalSummary.totalCount,
+        unlockedTasks: result.unlockedTasks ?? [],
+        progress: `${overallDone}/${tasks.length}`,
+        batchProgress: batchProgress
+          ? `${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}`
+          : undefined,
+      });
       await sendMessage(target, msg).catch(() => {});
 
     } else if (result.action === 'retry') {
-      // ❌ Fail → retry
-      const msg = formatReviewFailed(taskId, contract.name, iteration,
-        evalSummary.passCount, evalSummary.totalCount,
-        evalSummary.criteriaResults, evalSummary.feedback,
-        { evaluatorName: contract.evaluator, autoRetryHint: `自动重试中，第${(iteration + 2)}次迭代` });
+      const msg = formatReviewFailed({
+        taskId,
+        taskName: contract.name,
+        evaluator: contract.evaluator,
+        model: evalModel,
+        iteration,
+        passCount: evalSummary.passCount,
+        totalCount: evalSummary.totalCount,
+        criteriaResults: evalSummary.criteriaResults,
+        feedback: evalSummary.feedback,
+        autoRetryHint: `自动重试中，第${iteration + 2}次迭代`,
+      });
       await sendMessage(target, msg).catch(() => {});
 
     } else if (result.action === 'escalated') {
-      // 🚨 Escalated
       const history = evalSummary.criteriaResults.length > 0
         ? [{ iteration, feedback: evalSummary.feedback, criteriaResults: evalSummary.criteriaResults }]
         : [];
-      const msg = formatEscalation(taskId, contract.name, history,
-        `nexum retry ${taskId} --force`,
-        { evaluatorName: contract.evaluator });
+      const msg = formatEscalation({
+        taskId,
+        taskName: contract.name,
+        evaluator: contract.evaluator,
+        history,
+        retryCommand: `nexum retry ${taskId} --force`,
+      });
       await sendMessage(target, msg).catch(() => {});
     }
   }
@@ -205,11 +243,10 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   console.log(JSON.stringify({ ok: true, taskId, role: 'evaluator', verdict, action: result.action }));
 }
 
-// ─── Auto-dispatch Helpers ───────────────────────────────────────────────────
+// ─── Auto-dispatch ───────────────────────────────────────────────────────────
 
 async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string[]): Promise<void> {
   if (unlockedIds.length === 0) return;
-
   const tasks = await readTasks(projectDir);
 
   for (const id of unlockedIds) {
@@ -227,20 +264,10 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
   }
 }
 
-// ─── Eval YAML Parsing (unified) ─────────────────────────────────────────────
+// ─── Eval YAML Parsing ───────────────────────────────────────────────────────
 
-interface CriterionResult {
-  id: string;
-  passed: boolean;
-  reason: string;
-}
-
-interface EvalSummary {
-  feedback: string;
-  passCount: number;
-  totalCount: number;
-  criteriaResults: CriterionResult[];
-}
+interface CriterionResult { id: string; passed: boolean; reason: string; }
+interface EvalSummary { feedback: string; passCount: number; totalCount: number; criteriaResults: CriterionResult[]; }
 
 async function readEvalVerdict(evalResultPath: string): Promise<EvalVerdict> {
   const content = await readFile(evalResultPath, 'utf8');
@@ -255,31 +282,18 @@ async function readEvalSummary(evalResultPath: string): Promise<EvalSummary> {
     const feedback = parseYamlScalar(content.match(/^feedback:\s*(.+)$/m)?.[1]);
     const criteriaResults: CriterionResult[] = [];
 
-    const criteriaBlocks = content.split(/\n\s*-\s*id:\s*/);
-    for (const block of criteriaBlocks.slice(1)) {
+    const blocks = content.split(/\n\s*-\s*id:\s*/);
+    for (const block of blocks.slice(1)) {
       const idMatch = block.match(/^(\S+)/);
       const statusMatch = block.match(/^\s*(?:status|result):\s*(pass|fail)\s*$/m);
       const reason =
         parseYamlScalar(block.match(/^\s*reason:\s*(.+)$/m)?.[1]) ||
         parseYamlScalar(block.match(/^\s*evidence:\s*(.+)$/m)?.[1]) || '';
-
       if (!idMatch || !statusMatch) continue;
-
-      criteriaResults.push({
-        id: idMatch[1],
-        passed: statusMatch[1] === 'pass',
-        reason,
-      });
+      criteriaResults.push({ id: idMatch[1], passed: statusMatch[1] === 'pass', reason });
     }
 
-    const passCount = criteriaResults.filter((c) => c.passed).length;
-
-    return {
-      feedback,
-      passCount,
-      totalCount: criteriaResults.length,
-      criteriaResults,
-    };
+    return { feedback, passCount: criteriaResults.filter((c) => c.passed).length, totalCount: criteriaResults.length, criteriaResults };
   } catch {
     return { feedback: '', passCount: 0, totalCount: 0, criteriaResults: [] };
   }
@@ -293,9 +307,7 @@ function parseYamlScalar(raw: string | undefined): string {
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
 
 async function loadContract(projectDir: string, contractPath: string) {
-  const absPath = path.isAbsolute(contractPath)
-    ? contractPath
-    : path.join(projectDir, contractPath);
+  const absPath = path.isAbsolute(contractPath) ? contractPath : path.join(projectDir, contractPath);
   return parseContract(absPath);
 }
 
@@ -303,14 +315,14 @@ function resolvePath(projectDir: string, filePath: string): string {
   return path.isAbsolute(filePath) ? filePath : path.join(projectDir, filePath);
 }
 
-// ─── CLI Registration ────────────────────────────────────────────────────────
+// ─── CLI ─────────────────────────────────────────────────────────────────────
 
 export function registerCallback(program: Command): void {
   program
     .command('callback <taskId>')
-    .description('Process generator/evaluator callback: update status, notify, and auto-dispatch next step')
+    .description('Process generator/evaluator callback: update status, notify, auto-dispatch')
     .option('--project <dir>', 'Project directory', process.cwd())
-    .option('--role <role>', 'Callback role: generator | evaluator', 'generator')
+    .option('--role <role>', 'generator | evaluator', 'generator')
     .option('--model <name>', 'Model used by generator')
     .option('--input-tokens <n>', 'Input tokens consumed')
     .option('--output-tokens <n>', 'Output tokens consumed')
