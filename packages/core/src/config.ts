@@ -6,6 +6,19 @@ export type AgentCli = "codex" | "claude";
 export interface AgentConfig {
   cli: AgentCli;
   model?: string;
+  reasoning?: string;
+}
+
+export interface RoutingRule {
+  match: string;
+  generator: string;
+  evaluator: string;
+}
+
+export interface RoutingConfig {
+  defaultGenerator?: string;
+  defaultEvaluator?: string;
+  rules?: RoutingRule[];
 }
 
 export interface NotifyConfig {
@@ -33,6 +46,7 @@ export interface NexumConfig {
   git?: GitConfig;
   watch?: WatchConfig;
   health?: HealthConfig;
+  routing?: RoutingConfig;
 }
 
 export async function loadConfig(projectDir: string): Promise<NexumConfig> {

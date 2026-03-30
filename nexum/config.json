@@ -1,35 +1,54 @@
 {
   "agents": {
-    "plan": {
-      "cli": "claude",
-      "model": "claude-opus-4-6"
-    },
-    "codex-1": {
+    "codex-gen-01": {
       "cli": "codex",
       "model": "gpt-5.4",
       "reasoning": "high"
     },
-    "codex-frontend": {
+    "codex-gen-02": {
+      "cli": "codex",
+      "model": "gpt-5.4",
+      "reasoning": "high"
+    },
+    "codex-gen-03": {
+      "cli": "codex",
+      "model": "gpt-5.4",
+      "reasoning": "high"
+    },
+    "codex-frontend-01": {
       "cli": "codex",
       "model": "gpt-5.4",
       "reasoning": "medium"
     },
-    "cc-frontend": {
-      "cli": "claude",
-      "model": "claude-sonnet-4-6"
-    },
-    "cc-writer": {
-      "cli": "claude",
-      "model": "claude-sonnet-4-6"
-    },
-    "eval": {
+    "codex-eval-01": {
       "cli": "codex",
       "model": "gpt-5.4",
       "reasoning": "high"
     },
-    "gardener": {
+    "codex-e2e-01": {
+      "cli": "codex",
+      "model": "gpt-5.4",
+      "reasoning": "medium"
+    },
+    "claude-gen-01": {
       "cli": "claude",
-      "model": "claude-sonnet-4-6"
+      "model": "sonnet-4-6"
+    },
+    "claude-gen-02": {
+      "cli": "claude",
+      "model": "sonnet-4-6"
+    },
+    "claude-eval-01": {
+      "cli": "claude",
+      "model": "sonnet-4-6"
+    },
+    "claude-plan-01": {
+      "cli": "claude",
+      "model": "opus-4-6"
+    },
+    "claude-write-01": {
+      "cli": "claude",
+      "model": "sonnet-4-6"
     }
   },
   "notify": {
