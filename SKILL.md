@@ -1,6 +1,6 @@
 ---
 name: opennexum
-version: 2.0.0
+version: 2.1.0
 description: Contract-driven multi-agent orchestration with ACP. Event-driven dispatch, cross-review, auto-retry, parallel session support.
 requires:
   node: ">=20"
