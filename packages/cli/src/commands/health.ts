@@ -107,11 +107,9 @@ function printHealthReport(result: HealthResult, timeoutMin: number): void {
 }
 
 async function sendAlert(projectDir: string, stuck: StuckTask[]): Promise<void> {
-  const config = await loadConfig(projectDir).catch(() => ({}));
-  const notifyConfig = (config as Record<string, unknown>).notify as Record<string, string> | undefined;
-  const chatId = notifyConfig?.target ?? process.env['TELEGRAM_CHAT_ID'];
-  const botToken = notifyConfig?.botToken ?? process.env['TELEGRAM_BOT_TOKEN'];
-  if (!chatId || !botToken) return;
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const target = config.notify?.target;
+  if (!target) return;
 
   const lines = [
     `🚨 Nexum Health Alert — ${stuck.length} 个任务疑似卡死`,
@@ -128,7 +126,7 @@ async function sendAlert(projectDir: string, stuck: StuckTask[]): Promise<void> 
     '请检查任务状态：nexum status --project <dir>',
   ];
 
-  await sendMessage(chatId, lines.join('\n'), botToken);
+  await sendMessage(target, lines.join('\n'));
 }
 
 // ---------- watch mode ----------

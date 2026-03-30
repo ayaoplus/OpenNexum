@@ -13,7 +13,7 @@ import {
 } from '@nexum/core';
 import type { EvalVerdict, AgentCli } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
-import { formatComplete, formatFail, sendMessage, getChatId, getBotToken } from '@nexum/notify';
+import { formatComplete, formatFail, sendMessage } from '@nexum/notify';
 
 export interface RetryPayload {
   action: 'retry';
@@ -120,8 +120,7 @@ export async function runComplete(
     ? await readEvalSummary(task.eval_result_path)
     : { feedback: '', failedCriteria: [], passCount: 0, totalCount: 0 };
 
-  const chatId = getChatId();
-  const botToken = getBotToken();
+  const notifyTarget = (await loadConfig(projectDir).catch(() => ({ notify: undefined }))).notify?.target;
 
   // ── PASS ──
   if (normalizedVerdict === 'pass') {
@@ -133,7 +132,7 @@ export async function runComplete(
 
     const unlockedIds = await unlockDownstreamTasks(projectDir, taskId);
 
-    if (chatId && botToken) {
+    if (notifyTarget) {
       const tasks = await readTasks(projectDir);
       const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const msg = formatComplete(
@@ -146,7 +145,7 @@ export async function runComplete(
         unlockedIds,
         `${doneCount}/${tasks.length}`
       );
-      await sendMessage(chatId, msg, botToken).catch(() => {});
+      await sendMessage(notifyTarget, msg).catch(() => {});
     }
 
     return { action: 'done', taskId, unlockedTasks: unlockedIds };
@@ -198,7 +197,7 @@ export async function runComplete(
     const agentCli = resolveAgentCli(config, contract.generator);
     const label = `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`;
 
-    if (chatId && botToken) {
+    if (notifyTarget) {
       const msg = formatFail(
         taskId,
         contract.name,
@@ -209,7 +208,7 @@ export async function runComplete(
         evalSummary.failedCriteria,
         evalSummary.feedback.slice(0, 200)
       );
-      await sendMessage(chatId, msg, botToken).catch(() => {});
+      await sendMessage(notifyTarget, msg).catch(() => {});
     }
 
     const retryPayload: RetryPayload = {
@@ -239,7 +238,7 @@ export async function runComplete(
     last_error: reason,
   });
 
-  if (chatId && botToken) {
+  if (notifyTarget) {
     const msg = formatFail(
       taskId,
       contract.name,
@@ -250,7 +249,7 @@ export async function runComplete(
       evalSummary.failedCriteria,
       normalizedVerdict === 'escalated' ? reason : evalSummary.feedback.slice(0, 200)
     );
-    await sendMessage(chatId, msg, botToken).catch(() => {});
+    await sendMessage(notifyTarget, msg).catch(() => {});
   }
 
   return {

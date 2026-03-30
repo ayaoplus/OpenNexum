@@ -6,7 +6,8 @@ import {
   TaskStatus,
   parseContract,
 } from '@nexum/core';
-import { formatDispatch, sendMessage, getChatId, getBotToken } from '@nexum/notify';
+import { formatDispatch, sendMessage } from '@nexum/notify';
+import { loadConfig } from '@nexum/core';
 import path from 'node:path';
 
 /**
@@ -32,9 +33,9 @@ export async function runTrack(
   });
 
   // Send dispatch notification
-  const chatId = getChatId();
-  const botToken = getBotToken();
-  if (chatId && botToken) {
+  const config = await loadConfig(projectDir);
+  const target = config.notify?.target;
+  if (target) {
     try {
       const contractAbsPath = path.isAbsolute(task.contract_path)
         ? task.contract_path
@@ -52,7 +53,7 @@ export async function runTrack(
         contract.deliverables.length,
         progress
       );
-      await sendMessage(chatId, msg, botToken);
+      await sendMessage(target, msg);
     } catch {
       // Notification failure is non-fatal
     }

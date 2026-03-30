@@ -40,12 +40,10 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
   });
 
   // Send Telegram notification
-  const config = await loadConfig(projectDir).catch(() => ({}));
-  const notifyConfig = (config as Record<string, unknown>).notify as Record<string, string> | undefined;
-  const chatId = notifyConfig?.target ?? process.env['TELEGRAM_CHAT_ID'];
-  const botToken = notifyConfig?.botToken ?? process.env['TELEGRAM_BOT_TOKEN'];
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const target = config.notify?.target;
 
-  if (chatId && botToken) {
+  if (target) {
     const lines = commitMissing
       ? [
           '⚠️ Generator 完成，但未检测到新 commit！',
@@ -65,7 +63,7 @@ export async function runCallback(taskId: string, options: CallbackOptions): Pro
           '💬 等待编排者触发 eval',
         ];
 
-    await sendMessage(chatId, lines.join('\n'), botToken);
+    await sendMessage(target, lines.join('\n'));
   }
 
   console.log(JSON.stringify({
