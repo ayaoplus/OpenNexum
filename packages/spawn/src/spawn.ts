@@ -4,6 +4,7 @@ import path from "node:path";
 import type { SessionRecord, SpawnOptions } from "./types.js";
 
 const ACTIVE_TASKS_RELATIVE_PATH = path.join("nexum", "active-tasks.json");
+type AgentCliName = "claude" | "codex";
 type ExecaResult = {
   stdout: string;
   stderr: string;
@@ -31,12 +32,31 @@ interface ActiveTasksFile {
   tasks: ActiveTask[];
 }
 
-export function buildPromptArgs(promptFilePath: string): string[] {
-  return ["--task-file", promptFilePath];
+export function buildPromptArgs(
+  promptFilePath: string,
+  agentId: string,
+  cliName: AgentCliName
+): string[] {
+  return ["acpx", "-s", agentId, "--ttl", "0", "--approve-all", cliName, "exec", "-f", promptFilePath];
+}
+
+function resolveCliName(options: SpawnOptions): AgentCliName {
+  const agentCli = (options as SpawnOptions & { agentCli?: AgentCliName }).agentCli;
+
+  if (agentCli === "claude" || agentCli === "codex") {
+    return agentCli;
+  }
+
+  if (options.agentId.startsWith("claude-")) {
+    return "claude";
+  }
+
+  return "codex";
 }
 
 export async function spawnAcpSession(options: SpawnOptions): Promise<SessionRecord> {
   const startedAt = new Date().toISOString();
+  const cliName = resolveCliName(options);
   const args = [
     "sessions",
     "spawn",
@@ -50,7 +70,7 @@ export async function spawnAcpSession(options: SpawnOptions): Promise<SessionRec
     options.cwd,
     "--label",
     options.label,
-    ...buildPromptArgs(options.promptFile)
+    ...buildPromptArgs(options.promptFile, options.agentId, cliName)
   ];
   const result = await (await getExecaRunner())("openclaw", args, { reject: false });
 

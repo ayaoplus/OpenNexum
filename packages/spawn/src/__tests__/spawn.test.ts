@@ -76,14 +76,16 @@ test("spawnAcpSession constructs the expected openclaw command and updates activ
   testingGlobals.__nexumSpawnExeca = execaMock;
 
   const { spawnAcpSession } = await import(`../spawn.ts?spawn=${Date.now()}`);
-  const record = await spawnAcpSession({
+  const options = {
     taskId: "NX-002",
-    agentId: "codex",
+    agentId: "codex-gen-01",
+    agentCli: "claude",
     promptFile: path.join(projectDir, "prompt.md"),
     cwd: projectDir,
     mode: "run",
     label: "nx-002-codex"
-  });
+  };
+  const record = await spawnAcpSession(options);
 
   assert.equal(record.sessionKey, "agent:codex:acp:123");
   assert.equal(record.status, "running");
@@ -95,14 +97,22 @@ test("spawnAcpSession constructs the expected openclaw command and updates activ
     "--runtime",
     "acp",
     "--agent",
-    "codex",
+    "codex-gen-01",
     "--mode",
     "run",
     "--cwd",
     projectDir,
     "--label",
     "nx-002-codex",
-    "--task-file",
+    "acpx",
+    "-s",
+    "codex-gen-01",
+    "--ttl",
+    "0",
+    "--approve-all",
+    "claude",
+    "exec",
+    "-f",
     path.join(projectDir, "prompt.md")
   ]);
 
@@ -110,6 +120,90 @@ test("spawnAcpSession constructs the expected openclaw command and updates activ
     tasks: Array<{ id: string; acp_session_key?: string }>;
   };
   assert.equal(persisted.tasks[0]?.acp_session_key, "agent:codex:acp:123");
+
+  delete testingGlobals.__nexumSpawnExeca;
+});
+
+test("spawnAcpSession infers cliName from agentId prefix when agentCli is omitted", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-spawn-"));
+  const nexumDir = path.join(projectDir, "nexum");
+  const activeTasksPath = path.join(nexumDir, "active-tasks.json");
+
+  await mkdir(nexumDir, { recursive: true });
+  await writeFile(
+    activeTasksPath,
+    JSON.stringify(
+      {
+        tasks: [
+          {
+            id: "NX-003",
+            name: "Infer CLI name",
+            status: "running",
+            contract_path: "docs/nexum/contracts/NX-003.yaml",
+            depends_on: []
+          }
+        ]
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  const { calls, execaMock } = createExecaMock([
+    {
+      stdout: JSON.stringify({ status: "accepted", childSessionKey: "agent:codex:acp:201" }),
+      stderr: "",
+      exitCode: 0
+    },
+    {
+      stdout: JSON.stringify({ status: "accepted", childSessionKey: "agent:claude:acp:202" }),
+      stderr: "",
+      exitCode: 0
+    },
+    {
+      stdout: JSON.stringify({ status: "accepted", childSessionKey: "agent:codex:acp:203" }),
+      stderr: "",
+      exitCode: 0
+    }
+  ]);
+
+  testingGlobals.__nexumSpawnExeca = execaMock;
+
+  const { spawnAcpSession } = await import(`../spawn.ts?spawn-prefix=${Date.now()}`);
+  const cases = [
+    { agentId: "codex-gen-01", expectedCliName: "codex" },
+    { agentId: "claude-gen-01", expectedCliName: "claude" },
+    { agentId: "unknown", expectedCliName: "codex" }
+  ] as const;
+
+  for (const [index, testCase] of cases.entries()) {
+    await spawnAcpSession({
+      taskId: "NX-003",
+      agentId: testCase.agentId,
+      promptFile: path.join(projectDir, `prompt-${index}.md`),
+      cwd: projectDir,
+      mode: "run",
+      label: `nx-003-${index}`
+    });
+  }
+
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    calls.map((call) => call.args.slice(-10)),
+    cases.map((testCase, index) => [
+      "acpx",
+      "-s",
+      testCase.agentId,
+      "--ttl",
+      "0",
+      "--approve-all",
+      testCase.expectedCliName,
+      "exec",
+      "-f",
+      path.join(projectDir, `prompt-${index}.md`)
+    ])
+  );
 
   delete testingGlobals.__nexumSpawnExeca;
 });
