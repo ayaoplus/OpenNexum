@@ -26,7 +26,7 @@ eval_strategy:
       method: code_review
       threshold: must_pass
     - id: C2
-      desc: "config.git.remote 为空/未配置时，gitCommitCmd 不包含 git push"
+      desc: "config.git.remote 显式设为空字符串时，gitCommitCmd 不包含 git push；未配置时使用默认值 origin 并包含 git push"
       method: code_review
       threshold: must_pass
     - id: C3
