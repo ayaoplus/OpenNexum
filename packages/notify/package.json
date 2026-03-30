@@ -2,6 +2,7 @@
   "name": "@nexum/notify",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "main": "./dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -10,8 +11,11 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "dependencies": {
+    "execa": "^8.0.1"
+  },
   "scripts": {
     "build": "../prompts/node_modules/.bin/tsc -p tsconfig.json",
-    "test": "pnpm dlx --package=tsx tsx --test src/__tests__/*.test.ts"
+    "test": "pnpm dlx --package=tsx tsx --experimental-test-module-mocks --test src/__tests__/*.test.ts"
   }
 }

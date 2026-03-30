@@ -10,12 +10,29 @@ export interface AgentConfig {
 
 export interface NotifyConfig {
   target?: string;
-  botToken?: string;
+}
+
+export interface GitConfig {
+  remote?: string;
+  branch?: string;
+}
+
+export interface WatchConfig {
+  enabled?: boolean;
+  intervalMin?: number;
+  timeoutMin?: number;
+}
+
+export interface HealthConfig {
+  timeoutMin?: number;
 }
 
 export interface NexumConfig {
   notify?: NotifyConfig;
   agents?: Record<string, AgentConfig>;
+  git?: GitConfig;
+  watch?: WatchConfig;
+  health?: HealthConfig;
 }
 
 export async function loadConfig(projectDir: string): Promise<NexumConfig> {
