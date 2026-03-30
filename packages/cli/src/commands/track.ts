@@ -47,11 +47,12 @@ export async function runTrack(
       const progress = `${doneCount}/${tasks.length}`;
 
       const config = await loadConfig(projectDir);
-      const agentConfig = config.agents?.[contract.generator];
+      const generatorId = contract.agent?.generator ?? contract.generator;
+      const agentConfig = config.agents?.[generatorId];
       const msg = formatDispatch({
         taskId,
         taskName: contract.name,
-        agent: contract.generator,
+        agent: generatorId,
         model: agentConfig?.model,
         scopeCount: contract.scope.files.length,
         deliverablesCount: contract.deliverables.length,
