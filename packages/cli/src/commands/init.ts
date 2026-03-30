@@ -8,6 +8,13 @@ import { detectAvailableCli, detectGitRemote } from "../lib/detect.js";
 
 const CALLBACK_BLOCK_START = "<!-- nexum:callback:start -->";
 const CALLBACK_BLOCK_END = "<!-- nexum:callback:end -->";
+const DEFAULT_AGENT_GUIDE = `# AGENTS.md
+
+## 核心规范
+- 使用 Conventional Commits。
+- 保持 commit 原子化；一个 commit 只做一件完整的事。
+- 直接 push 到 main/master，快速迭代，出问题直接 revert。
+`;
 const CALLBACK_PROTOCOL_BLOCK = `${CALLBACK_BLOCK_START}
 ## Nexum 回调协议（必须遵守）
 
@@ -78,7 +85,11 @@ async function upsertCallbackProtocol(
   );
 
   if (!(await fileExists(targetPath))) {
-    await writeFile(targetPath, CALLBACK_PROTOCOL_BLOCK + "\n", "utf8");
+    await writeFile(
+      targetPath,
+      `${DEFAULT_AGENT_GUIDE}\n${CALLBACK_PROTOCOL_BLOCK}\n`,
+      "utf8"
+    );
     return { result: "created", targetFile: targetPath };
   }
 
