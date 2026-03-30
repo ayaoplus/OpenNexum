@@ -58,6 +58,8 @@ export function renderEvaluatorPrompt(context: PromptContext): string {
   return applyVariables(template, {
     CRITERIA_PREVIEW: formatCriteria(context.contract.eval_strategy.criteria),
     EVAL_RESULT_PATH: context.evalResultPath,
+    TASK_ID: context.contract.id,
+    PROJECT_DIR: context.projectDir ?? '',
   });
 }
 

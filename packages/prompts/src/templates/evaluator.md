@@ -28,3 +28,16 @@ criteria:
     reason: "..."
 feedback: "总体评语"
 ```
+
+## Callback Instructions
+
+写入 YAML 完成后，必须执行以下命令通知编排者：
+
+```bash
+nexum callback {{TASK_ID}} --project {{PROJECT_DIR}} --role evaluator \
+  --model <当前使用的模型名，如 claude-sonnet-4-6> \
+  --input-tokens <本次对话 input token 数量> \
+  --output-tokens <本次对话 output token 数量>
+```
+
+此步骤不可跳过，否则编排流程无法推进。
