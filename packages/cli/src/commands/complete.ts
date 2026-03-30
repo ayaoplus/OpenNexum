@@ -19,6 +19,7 @@ import {
   formatFail,
   sendMessage,
 } from '@nexum/notify';
+import { archiveDoneTasks } from '../lib/archive.js';
 
 export interface RetryPayload {
   action: 'retry';
@@ -249,10 +250,10 @@ export async function runComplete(
     });
 
     const unlockedIds = await unlockDownstreamTasks(projectDir, taskId);
+    const tasks = await readTasks(projectDir);
+    const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
 
     if (notifyTarget) {
-      const tasks = await readTasks(projectDir);
-      const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const msg = formatComplete(
         taskId,
         contract.name,
@@ -265,6 +266,15 @@ export async function runComplete(
         { evaluatorName: contract.evaluator }
       );
       await sendMessage(notifyTarget, msg).catch(() => {});
+    }
+
+    if (doneCount > 20) {
+      await archiveDoneTasks(projectDir).catch((error) => {
+        console.warn(
+          'auto-archive failed:',
+          error instanceof Error ? error.message : String(error)
+        );
+      });
     }
 
     return { action: 'done', taskId, unlockedTasks: unlockedIds };

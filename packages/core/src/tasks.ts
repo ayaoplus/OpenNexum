@@ -9,30 +9,48 @@ const LOCK_TIMEOUT_MS = 2_000;
 const STALE_LOCK_MS = 30_000;
 
 export async function readTasks(projectDir: string): Promise<Task[]> {
-  const filePath = getTasksFilePath(projectDir);
-
-  try {
-    const contents = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(contents) as ActiveTasksFile;
-
-    if (!parsed || !Array.isArray(parsed.tasks)) {
-      throw new Error(`Invalid active tasks file: ${filePath}`);
-    }
-
-    return parsed.tasks.map((task) => normalizeTask(task, filePath));
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return [];
-    }
-
-    throw error;
-  }
+  const activeTasks = await readActiveTasksFile(projectDir);
+  return activeTasks.tasks;
 }
 
 export async function writeTasks(projectDir: string, tasks: Task[]): Promise<void> {
+  const activeTasks = await readActiveTasksFile(projectDir);
+  await writeActiveTasksFile(projectDir, { ...activeTasks, tasks });
+}
+
+export async function getBatchProgress(
+  projectDir: string,
+  batch: string
+): Promise<{ done: number; total: number; batch: string }> {
+  const tasks = await readTasks(projectDir);
+  const batchTasks = tasks.filter((task) => task.batch === batch);
+
+  return {
+    done: batchTasks.filter((task) => task.status === TaskStatus.Done).length,
+    total: batchTasks.length,
+    batch
+  };
+}
+
+export async function getActiveBatch(projectDir: string): Promise<string | undefined> {
+  const activeTasks = await readActiveTasksFile(projectDir);
+  return activeTasks.currentBatch;
+}
+
+export async function writeBatch(projectDir: string, batch?: string): Promise<void> {
+  await withTasksLock(projectDir, async () => {
+    const activeTasks = await readActiveTasksFile(projectDir);
+    await writeActiveTasksFile(projectDir, { ...activeTasks, currentBatch: batch });
+  });
+}
+
+async function writeActiveTasksFile(
+  projectDir: string,
+  activeTasks: ActiveTasksFile
+): Promise<void> {
   const filePath = getTasksFilePath(projectDir);
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const payload = JSON.stringify({ tasks }, null, 2) + "\n";
+  const payload = JSON.stringify(serializeActiveTasks(activeTasks), null, 2) + "\n";
 
   try {
     await mkdir(path.dirname(filePath), { recursive: true });
@@ -50,22 +68,22 @@ export async function updateTask(
   patch: Partial<Task>
 ): Promise<Task> {
   return withTasksLock(projectDir, async () => {
-    const tasks = await readTasks(projectDir);
-    const index = tasks.findIndex((task) => task.id === taskId);
+    const activeTasks = await readActiveTasksFile(projectDir);
+    const index = activeTasks.tasks.findIndex((task) => task.id === taskId);
 
     if (index < 0) {
       throw new Error(`Task not found: ${taskId}`);
     }
 
     const nextTask: Task = {
-      ...tasks[index],
+      ...activeTasks.tasks[index],
       ...patch,
       updated_at: patch.updated_at ?? new Date().toISOString()
     };
 
-    const nextTasks = tasks.slice();
+    const nextTasks = activeTasks.tasks.slice();
     nextTasks[index] = nextTask;
-    await writeTasks(projectDir, nextTasks);
+    await writeActiveTasksFile(projectDir, { ...activeTasks, tasks: nextTasks });
 
     return nextTask;
   });
@@ -100,6 +118,34 @@ function getTasksFilePath(projectDir: string): string {
 
 function getLockFilePath(projectDir: string): string {
   return `${getTasksFilePath(projectDir)}.lock`;
+}
+
+async function readActiveTasksFile(projectDir: string): Promise<ActiveTasksFile> {
+  const filePath = getTasksFilePath(projectDir);
+
+  try {
+    const contents = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(contents) as ActiveTasksFile;
+
+    if (!parsed || !Array.isArray(parsed.tasks)) {
+      throw new Error(`Invalid active tasks file: ${filePath}`);
+    }
+
+    if (parsed.currentBatch !== undefined && typeof parsed.currentBatch !== "string") {
+      throw new Error(`Invalid currentBatch in ${filePath}`);
+    }
+
+    return {
+      tasks: parsed.tasks.map((task) => normalizeTask(task, filePath)),
+      currentBatch: parsed.currentBatch
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return { tasks: [] };
+    }
+
+    throw error;
+  }
 }
 
 async function withTasksLock<T>(
@@ -170,7 +216,17 @@ function normalizeTask(task: Task, filePath: string): Task {
     throw new Error(`Invalid task status for ${task.id} in ${filePath}`);
   }
 
+  if (task.batch !== undefined && typeof task.batch !== "string") {
+    throw new Error(`Invalid task batch for ${task.id} in ${filePath}`);
+  }
+
   return task;
+}
+
+function serializeActiveTasks(activeTasks: ActiveTasksFile): ActiveTasksFile {
+  return activeTasks.currentBatch === undefined
+    ? { tasks: activeTasks.tasks }
+    : { tasks: activeTasks.tasks, currentBatch: activeTasks.currentBatch };
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {

@@ -1,7 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import type { Command } from 'commander';
-import { readTasks, TaskStatus, NexumError, ErrorCode } from '@nexum/core';
+import {
+  getActiveBatch,
+  getBatchProgress,
+  readTasks,
+  TaskStatus,
+  NexumError,
+} from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
+import { archiveDoneTasks } from '../lib/archive.js';
 
 /** Read the last N non-empty lines from an ACP stream log JSONL file */
 async function getStreamActivity(streamLogPath: string, lines = 2): Promise<string> {
@@ -28,14 +35,21 @@ async function getStreamActivity(streamLogPath: string, lines = 2): Promise<stri
   }
 }
 
-export async function runStatus(projectDir: string, options: { json?: boolean } = {}): Promise<void> {
+export async function runStatus(
+  projectDir: string,
+  options: { json?: boolean; batch?: string } = {}
+): Promise<void> {
   const tasks = await readTasks(projectDir);
+  const selectedBatch = options.batch ?? (await getActiveBatch(projectDir));
+  const visibleTasks =
+    options.batch === undefined ? tasks : tasks.filter((task) => task.batch === options.batch);
 
   if (options.json) {
-    const output = tasks.map((task) => ({
+    const output = visibleTasks.map((task) => ({
       id: task.id,
       name: task.name,
       status: task.status,
+      batch: task.batch,
       iteration: task.iteration,
       acp_session_key: task.acp_session_key,
       acp_stream_log: task.acp_stream_log,
@@ -60,7 +74,7 @@ export async function runStatus(projectDir: string, options: { json?: boolean } 
     cancelled:  '⛔',
   };
 
-  for (const task of tasks) {
+  for (const task of visibleTasks) {
     const icon = STATUS_ICONS[task.status] ?? '❓';
     const sessionInfo = task.acp_session_key
       ? ` [${task.acp_session_key.slice(-8)}]`
@@ -90,8 +104,17 @@ export async function runStatus(projectDir: string, options: { json?: boolean } 
     );
   }
 
-  const done = tasks.filter((t) => t.status === TaskStatus.Done).length;
-  console.log(`\n📊 进度: ${done}/${tasks.length} done`);
+  const overallDone = tasks.filter((task) => task.status === TaskStatus.Done).length;
+
+  if (selectedBatch) {
+    const batchProgress = await getBatchProgress(projectDir, selectedBatch);
+    console.log(
+      `\n📊 ${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}  |  总体: ${overallDone}/${tasks.length}`
+    );
+    return;
+  }
+
+  console.log(`\n📊 总体: ${overallDone}/${tasks.length}`);
 }
 
 export function registerStatus(program: Command): void {
@@ -99,16 +122,38 @@ export function registerStatus(program: Command): void {
     .command('status')
     .description('Show status of all tasks with live ACP activity')
     .option('--project <dir>', 'Project directory', process.cwd())
+    .option('--batch <name>', 'Filter displayed tasks to one batch')
     .option('--json', 'Output task list as JSON')
-    .action(async (options: { project: string; json?: boolean }) => {
+    .action(async (options: { project: string; json?: boolean; batch?: string }) => {
       try {
-        await runStatus(options.project, { json: options.json });
+        await runStatus(options.project, { json: options.json, batch: options.batch });
       } catch (err) {
         if (err instanceof NexumError) {
           console.error(`status failed [${err.code}]: ${err.message}`);
         } else {
           console.error('status failed:', err instanceof Error ? err.message : err);
         }
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('archive')
+    .description('Archive done tasks into nexum/history')
+    .option('--project <dir>', 'Project directory', process.cwd())
+    .option('--batch <name>', 'Archive done tasks for one batch')
+    .action(async (options: { project: string; batch?: string }) => {
+      try {
+        const result = await archiveDoneTasks(options.project, options.batch);
+
+        if (result.archivedCount === 0) {
+          console.log('No done tasks to archive.');
+          return;
+        }
+
+        console.log(`Archived ${result.archivedCount} task(s) to ${result.archivePath}`);
+      } catch (err) {
+        console.error('archive failed:', err instanceof Error ? err.message : err);
         process.exit(1);
       }
     });

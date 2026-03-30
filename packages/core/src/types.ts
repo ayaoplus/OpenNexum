@@ -49,6 +49,7 @@ export interface Task {
   id: string;
   name: string;
   status: TaskStatus;
+  batch?: string;
   contract_path: string;
   depends_on: string[];
   iteration?: number;
@@ -68,6 +69,7 @@ export interface Task {
 
 export interface ActiveTasksFile {
   tasks: Task[];
+  currentBatch?: string;
 }
 
 export type EvalVerdict = "pass" | "fail" | "escalated";
