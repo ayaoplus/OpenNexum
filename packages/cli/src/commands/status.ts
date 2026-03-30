@@ -1,10 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import type { Command } from 'commander';
 import {
-  getActiveBatch,
   getBatchProgress,
   readTasks,
   TaskStatus,
+  type Task,
   NexumError,
 } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
@@ -35,12 +35,37 @@ async function getStreamActivity(streamLogPath: string, lines = 2): Promise<stri
   }
 }
 
+function getCurrentBatch(tasks: Task[]): string | undefined {
+  const batchedTasks = tasks.filter((task): task is Task & { batch: string } => Boolean(task.batch));
+
+  if (batchedTasks.length === 0) {
+    return undefined;
+  }
+
+  const latestTask = batchedTasks.reduce((latest, task) => {
+    if (!latest) {
+      return task;
+    }
+
+    const latestTime = latest.updated_at ? Date.parse(latest.updated_at) : Number.NEGATIVE_INFINITY;
+    const taskTime = task.updated_at ? Date.parse(task.updated_at) : Number.NEGATIVE_INFINITY;
+
+    if (taskTime !== latestTime) {
+      return taskTime > latestTime ? task : latest;
+    }
+
+    return task.batch.localeCompare(latest.batch) > 0 ? task : latest;
+  }, undefined as (Task & { batch: string }) | undefined);
+
+  return latestTask?.batch;
+}
+
 export async function runStatus(
   projectDir: string,
   options: { json?: boolean; batch?: string } = {}
 ): Promise<void> {
   const tasks = await readTasks(projectDir);
-  const selectedBatch = options.batch ?? (await getActiveBatch(projectDir));
+  const currentBatch = getCurrentBatch(tasks);
   const visibleTasks =
     options.batch === undefined ? tasks : tasks.filter((task) => task.batch === options.batch);
 
@@ -106,15 +131,13 @@ export async function runStatus(
 
   const overallDone = tasks.filter((task) => task.status === TaskStatus.Done).length;
 
-  if (selectedBatch) {
-    const batchProgress = await getBatchProgress(projectDir, selectedBatch);
-    console.log(
-      `\n📊 ${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}  |  总体: ${overallDone}/${tasks.length}`
-    );
-    return;
+  if (currentBatch) {
+    const batchProgress = await getBatchProgress(projectDir, currentBatch);
+    console.log(`\n📊 当前批次 (${batchProgress.batch}): ${batchProgress.done}/${batchProgress.total}`);
+    console.log(`📊 总体: ${overallDone}/${tasks.length}`);
+  } else {
+    console.log(`\n📊 总体: ${overallDone}/${tasks.length}`);
   }
-
-  console.log(`\n📊 总体: ${overallDone}/${tasks.length}`);
 }
 
 export function registerStatus(program: Command): void {
