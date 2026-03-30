@@ -20,6 +20,7 @@ import {
 } from '@nexum/notify';
 import { spawnAcpSession } from '@nexum/spawn';
 import { runComplete } from './complete.js';
+import { runSpawn, runSpawnEval } from './spawn.js';
 
 interface CallbackOptions {
   project: string;
@@ -100,6 +101,23 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
         }).split('\n');
 
     await sendMessage(target, lines.join('\n'));
+  }
+
+  try {
+    const evalPayload = await runSpawnEval(taskId, projectDir);
+    const evaluatorSessionName = `claude-eval-${taskId}`;
+    const session = await spawnAcpSession({
+      ...evalPayload,
+      agentId: evaluatorSessionName,
+      mode: 'run',
+    });
+    await updateTask(projectDir, taskId, {
+      acp_session_key: session.sessionKey,
+    });
+  } catch (error) {
+    console.warn(
+      `callback generator auto-dispatch evaluator failed for ${taskId}: ${error instanceof Error ? error.message : error}`
+    );
   }
 
   console.log(JSON.stringify({
@@ -187,6 +205,38 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
         }
       );
       await sendMessage(target, msg).catch(() => {});
+    }
+
+    try {
+      const tasks = await readTasks(projectDir);
+      const unlockedPendingTasks = tasks.filter(
+        (item) =>
+          item.status === TaskStatus.Pending &&
+          (completeResult.unlockedTasks ?? []).includes(item.id)
+      );
+
+      for (const unlockedTask of unlockedPendingTasks) {
+        try {
+          const generatorPayload = await runSpawn(unlockedTask.id, projectDir);
+          const generatorSessionName = `codex-gen-${unlockedTask.id}`;
+          const session = await spawnAcpSession({
+            ...generatorPayload,
+            agentId: generatorSessionName,
+            mode: 'run',
+          });
+          await updateTask(projectDir, unlockedTask.id, {
+            acp_session_key: session.sessionKey,
+          });
+        } catch (error) {
+          console.warn(
+            `callback evaluator auto-dispatch generator failed for ${unlockedTask.id}: ${error instanceof Error ? error.message : error}`
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `callback evaluator next-task dispatch failed for ${taskId}: ${error instanceof Error ? error.message : error}`
+      );
     }
   }
 

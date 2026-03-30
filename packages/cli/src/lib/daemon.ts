@@ -162,9 +162,8 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
     }
     try {
       const { stdout } = await execFileAsync('launchctl', ['list', PLIST_LABEL]);
-      // launchctl list output columns: PID | Status | Label
-      const firstCol = stdout.trim().split(/\s+/)[0] ?? '-';
-      return firstCol !== '-' && !isNaN(Number(firstCol)) ? 'running' : 'stopped';
+      const parsed = JSON.parse(stdout) as { PID?: unknown };
+      return typeof parsed.PID === 'number' ? 'running' : 'stopped';
     } catch {
       return 'stopped';
     }
