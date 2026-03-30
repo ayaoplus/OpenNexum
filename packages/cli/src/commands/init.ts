@@ -144,7 +144,7 @@ async function runWizard(projectDir: string, useDefaults: boolean): Promise<Wiza
     const stack = (await ask("技术栈描述 (默认: 留空): ")).trim();
 
     // Step 3: git remote
-    const gitRemoteInput = (await ask("Git remote 名称 (默认: origin, 留空 = 不 push): ")).trim();
+    const gitRemoteInput = (await ask("Git remote 名称 (默认: origin, 输入 - 跳过 push): ")).trim();
     // Empty input → default to 'origin'; enter a single space or '-' to opt out of push
     const gitRemote = gitRemoteInput === "" ? "origin" : (gitRemoteInput === "-" ? "" : gitRemoteInput);
 
