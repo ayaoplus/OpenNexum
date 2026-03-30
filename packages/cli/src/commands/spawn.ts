@@ -60,7 +60,9 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   );
 
   const config = await loadConfig(projectDir);
-  const gitRemote = config.git?.remote;
+  // If git.remote is explicitly set to empty string, skip push; otherwise default to 'origin'
+  const gitRemoteRaw = config.git?.remote;
+  const gitRemote = gitRemoteRaw === '' ? '' : (gitRemoteRaw ?? 'origin');
   const gitBranch = config.git?.branch ?? 'main';
 
   const type = detectCommitType(contract.name);
