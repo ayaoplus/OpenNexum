@@ -20,6 +20,11 @@ export interface ContractEvalStrategy {
   criteria: ContractCriterion[];
 }
 
+export interface ContractAgent {
+  generator?: string;
+  evaluator?: string;
+}
+
 export interface Contract {
   id: string;
   name: string;
@@ -30,6 +35,7 @@ export interface Contract {
   eval_strategy: ContractEvalStrategy;
   generator: string;
   evaluator: string;
+  agent?: ContractAgent;
   max_iterations: number;
   depends_on: string[];
 }
