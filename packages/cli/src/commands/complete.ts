@@ -56,9 +56,7 @@ interface EscalationHistoryEntry {
   criteriaResults: CriterionResult[];
 }
 
-const taskStatusRegistry = TaskStatus as unknown as Record<string, string>;
-taskStatusRegistry.Escalated ??= 'escalated';
-const ESCALATED_TASK_STATUS = taskStatusRegistry.Escalated as TaskStatus;
+const ESCALATED_TASK_STATUS = TaskStatus.Escalated;
 const ESCALATED_REASON_PREFIX = 'Escalated:';
 const FEEDBACK_SIMILARITY_THRESHOLD = 0.8;
 

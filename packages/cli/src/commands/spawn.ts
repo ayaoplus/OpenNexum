@@ -5,7 +5,7 @@ import {
   parseContract,
   getTask,
   updateTask,
-  readTasks,
+
   TaskStatus,
   getHeadCommit,
   loadConfig,
@@ -147,7 +147,6 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     `${taskId}-iter-${iteration}.yaml`
   );
 
-  const tasks = await readTasks(projectDir);
   const { renderEvaluatorPrompt } = await import('@nexum/prompts');
   const promptContent = renderEvaluatorPrompt({
     contract: resolvedContract,

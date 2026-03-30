@@ -42,6 +42,7 @@ export enum TaskStatus {
   Evaluating = "evaluating",
   Done = "done",
   Failed = "failed",
+  Escalated = "escalated",
   Cancelled = "cancelled"
 }
 
