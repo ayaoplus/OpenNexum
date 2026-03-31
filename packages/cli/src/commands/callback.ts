@@ -1,4 +1,4 @@
-import { appendFile, readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -14,6 +14,7 @@ import {
   loadConfig,
   getHeadCommit,
   parseContract,
+  parseEvalResult,
   type EvalVerdict,
   type NexumConfig,
 } from '@nexum/core';
@@ -152,13 +153,33 @@ interface DispatchQueueEntry {
 async function writeDispatchQueue(taskId: string, action: DispatchAction, projectDir: string): Promise<void> {
   try {
     const queuePath = path.join(projectDir, 'nexum', 'dispatch-queue.jsonl');
+    const existingContents = await readFile(queuePath, 'utf8').catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') {
+        return '';
+      }
+      throw err;
+    });
+    const existingLines = existingContents
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const existingEntries = existingLines.map(
+      (line) => JSON.parse(line) as DispatchQueueEntry
+    );
+
+    if (existingEntries.some((entry) => entry.taskId === taskId && entry.action === action)) {
+      console.warn(`[callback] dispatch queue entry already exists for ${taskId} (${action}), skipping append`);
+      return;
+    }
+
     const entry: DispatchQueueEntry = {
       taskId,
       action,
       projectDir,
       createdAt: new Date().toISOString(),
     };
-    await appendFile(queuePath, JSON.stringify(entry) + '\n', 'utf8');
+    existingLines.push(JSON.stringify(entry));
+    await writeFile(queuePath, `${existingLines.join('\n')}\n`, 'utf8');
   } catch (err) {
     console.warn(`[callback] failed to write dispatch queue: ${err instanceof Error ? err.message : err}`);
   }
@@ -295,7 +316,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
   const evalResultPath = resolvePath(projectDir, task.eval_result_path);
   const verdict = await readEvalVerdict(evalResultPath);
-  const evalSummary = await readEvalSummary(evalResultPath);
+  const evalSummary = await parseEvalResult(evalResultPath);
   const iteration = task.iteration ?? 0;
   const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
   const elapsedMs = Date.now() - startedAt;
@@ -403,44 +424,11 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
   }
 }
 
-// ─── Eval YAML Parsing ───────────────────────────────────────────────────────
-
-interface CriterionResult { id: string; passed: boolean; reason: string; }
-interface EvalSummary { feedback: string; passCount: number; totalCount: number; criteriaResults: CriterionResult[]; }
-
 async function readEvalVerdict(evalResultPath: string): Promise<EvalVerdict> {
   const content = await readFile(evalResultPath, 'utf8');
   const match = content.match(/^\s*verdict:\s*(pass|fail|escalated)\s*(?:#.*)?$/m);
   if (!match?.[1]) throw new Error(`Unable to parse verdict from ${evalResultPath}`);
   return match[1] as EvalVerdict;
-}
-
-async function readEvalSummary(evalResultPath: string): Promise<EvalSummary> {
-  try {
-    const content = await readFile(evalResultPath, 'utf8');
-    const feedback = parseYamlScalar(content.match(/^feedback:\s*(.+)$/m)?.[1]);
-    const criteriaResults: CriterionResult[] = [];
-
-    const blocks = content.split(/\n\s*-\s*id:\s*/);
-    for (const block of blocks.slice(1)) {
-      const idMatch = block.match(/^(\S+)/);
-      const statusMatch = block.match(/^\s*(?:status|result):\s*(pass|fail)\s*$/m);
-      const reason =
-        parseYamlScalar(block.match(/^\s*reason:\s*(.+)$/m)?.[1]) ||
-        parseYamlScalar(block.match(/^\s*evidence:\s*(.+)$/m)?.[1]) || '';
-      if (!idMatch || !statusMatch) continue;
-      criteriaResults.push({ id: idMatch[1], passed: statusMatch[1] === 'pass', reason });
-    }
-
-    return { feedback, passCount: criteriaResults.filter((c) => c.passed).length, totalCount: criteriaResults.length, criteriaResults };
-  } catch {
-    return { feedback: '', passCount: 0, totalCount: 0, criteriaResults: [] };
-  }
-}
-
-function parseYamlScalar(raw: string | undefined): string {
-  if (!raw) return '';
-  return raw.trim().replace(/^["']|["']$/g, '');
 }
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────

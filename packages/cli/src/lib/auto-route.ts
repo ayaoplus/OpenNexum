@@ -71,16 +71,19 @@ export function autoSelectEvaluator(
 }
 
 export function resolveAgents(
-  contract: Pick<Contract, 'name' | 'type' | 'generator' | 'evaluator'>,
+  contract: Pick<Contract, 'name' | 'type' | 'generator' | 'evaluator' | 'agent'>,
   config: NexumConfig,
 ): { generator: string; evaluator: string } {
-  const generator = isAutoAgent(contract.generator)
-    ? autoSelectGenerator(contract, config)
-    : contract.generator;
+  const rawGenerator = contract.agent?.generator ?? contract.generator;
+  const rawEvaluator = contract.agent?.evaluator ?? contract.evaluator;
 
-  const evaluator = isAutoAgent(contract.evaluator)
+  const generator = isAutoAgent(rawGenerator)
+    ? autoSelectGenerator(contract, config)
+    : rawGenerator;
+
+  const evaluator = isAutoAgent(rawEvaluator)
     ? autoSelectEvaluator(generator, contract, config)
-    : contract.evaluator;
+    : rawEvaluator;
 
   return { generator, evaluator };
 }
