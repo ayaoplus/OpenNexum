@@ -1,5 +1,14 @@
 export * from "./config";
-export * from "./contract";
+export {
+  parseContract,
+  parseEvalResult,
+  type Contract,
+  type ContractCriterion,
+  type ContractEvalStrategy,
+  type ContractScope,
+  type CriterionResult,
+  type EvalSummary
+} from "./contract";
 export * from "./errors";
 export * from "./git";
 export * from "./tasks";

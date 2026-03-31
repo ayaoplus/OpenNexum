@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import {
   parseContract,
+  parseEvalResult,
   getTask,
   readTasks,
   updateTask,
@@ -11,7 +12,7 @@ import {
   loadConfig,
   resolveAgentCli,
 } from '@nexum/core';
-import type { EvalVerdict, AgentCli } from '@nexum/core';
+import type { EvalVerdict, AgentCli, CriterionResult } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
 // Notifications are handled by callback.ts, not here
 import { archiveDoneTasks } from '../lib/archive.js';
@@ -36,20 +37,6 @@ export interface CompleteResult {
   retryPayload?: RetryPayload;
 }
 
-interface CriterionResult {
-  id: string;
-  passed: boolean;
-  reason: string;
-}
-
-interface EvalSummary {
-  feedback: string;
-  failedCriteria: string[];
-  passCount: number;
-  totalCount: number;
-  criteriaResults: CriterionResult[];
-}
-
 interface EscalationHistoryEntry {
   iteration: number;
   feedback: string;
@@ -59,58 +46,6 @@ interface EscalationHistoryEntry {
 const ESCALATED_TASK_STATUS = TaskStatus.Escalated;
 const ESCALATED_REASON_PREFIX = 'Escalated:';
 const FEEDBACK_SIMILARITY_THRESHOLD = 0.8;
-
-function parseYamlScalar(raw: string | undefined): string {
-  if (!raw) {
-    return '';
-  }
-
-  return raw.trim().replace(/^["']|["']$/g, '');
-}
-
-async function readEvalSummary(evalResultPath: string): Promise<EvalSummary> {
-  try {
-    const content = await readFile(evalResultPath, 'utf8');
-    const feedback = parseYamlScalar(content.match(/^feedback:\s*(.+)$/m)?.[1]);
-    const criteriaResults: CriterionResult[] = [];
-    const failedCriteria: string[] = [];
-    const criteriaBlocks = content.split(/\n\s*-\s*id:\s*/);
-
-    for (const block of criteriaBlocks.slice(1)) {
-      const idMatch = block.match(/^(\S+)/);
-      const statusMatch = block.match(/^\s*(?:status|result):\s*(pass|fail)\s*$/m);
-      const reason =
-        parseYamlScalar(block.match(/^\s*reason:\s*(.+)$/m)?.[1]) ||
-        parseYamlScalar(block.match(/^\s*evidence:\s*(.+)$/m)?.[1]) ||
-        parseYamlScalar(block.match(/^\s*detail:\s*(.+)$/m)?.[1]);
-
-      if (!idMatch || !statusMatch) {
-        continue;
-      }
-
-      const passed = statusMatch[1] === 'pass';
-      criteriaResults.push({ id: idMatch[1], passed, reason });
-
-      if (!passed) {
-        failedCriteria.push(idMatch[1]);
-      }
-    }
-
-    const passCount =
-      criteriaResults.length > 0
-        ? criteriaResults.filter((result) => result.passed).length
-        : [...content.matchAll(/(?:status|result):\s*pass/g)].length;
-    const failCount =
-      criteriaResults.length > 0
-        ? criteriaResults.filter((result) => !result.passed).length
-        : [...content.matchAll(/(?:status|result):\s*fail/g)].length;
-    const totalCount = criteriaResults.length > 0 ? criteriaResults.length : passCount + failCount;
-
-    return { feedback, failedCriteria, passCount, totalCount, criteriaResults };
-  } catch {
-    return { feedback: '', failedCriteria: [], passCount: 0, totalCount: 0, criteriaResults: [] };
-  }
-}
 
 function tokenizeFeedback(text: string): string[] {
   return (text.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]+/g) ?? []).filter(Boolean);
@@ -146,7 +81,7 @@ async function readEscalationHistory(
   const history: EscalationHistoryEntry[] = [];
 
   for (let iteration = 0; iteration <= latestIteration; iteration += 1) {
-    const summary = await readEvalSummary(buildEvalResultPath(projectDir, taskId, iteration));
+    const summary = await parseEvalResult(buildEvalResultPath(projectDir, taskId, iteration));
 
     if (!summary.feedback && summary.criteriaResults.length === 0) {
       continue;
@@ -216,11 +151,11 @@ export async function runComplete(
   const iteration = task.iteration ?? 0;
 
   const evalSummary = task.eval_result_path
-    ? await readEvalSummary(task.eval_result_path)
+    ? await parseEvalResult(task.eval_result_path)
     : { feedback: '', failedCriteria: [], passCount: 0, totalCount: 0, criteriaResults: [] };
   const previousEvalSummary =
     normalizedVerdict === 'fail' && iteration > 0
-      ? await readEvalSummary(buildEvalResultPath(projectDir, taskId, iteration - 1))
+      ? await parseEvalResult(buildEvalResultPath(projectDir, taskId, iteration - 1))
       : null;
   const feedbackSimilarity = previousEvalSummary
     ? calculateFeedbackSimilarity(evalSummary.feedback, previousEvalSummary.feedback)
