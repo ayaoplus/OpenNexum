@@ -24,6 +24,7 @@ import {
   formatReviewFailed,
   formatEscalation,
   formatCommitMissing,
+  formatBatchDone,
   sendMessage,
 } from '@nexum/notify';
 import { runComplete } from './complete.js';
@@ -428,6 +429,27 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
           : undefined,
       });
       await sendMessage(target, msg).catch(() => {});
+
+      // ── Batch done summary ──
+      if (activeBatch && batchProgress && batchProgress.done === batchProgress.total) {
+        const batchTasks = tasks.filter((t) => t.batch === activeBatch);
+        const batchStartTime = batchTasks.reduce((earliest, t) => {
+          const ts = t.started_at ? new Date(t.started_at).getTime() : Date.now();
+          return ts < earliest ? ts : earliest;
+        }, Date.now());
+
+        const batchMsg = formatBatchDone({
+          batchName: activeBatch,
+          tasks: batchTasks.map((t) => ({
+            taskId: t.id,
+            taskName: t.name,
+            status: t.status === TaskStatus.Done ? 'done' : 'fail',
+            elapsedMs: t.started_at ? Date.now() - new Date(t.started_at).getTime() : 0,
+          })),
+          totalElapsedMs: Date.now() - batchStartTime,
+        });
+        await sendMessage(target, batchMsg).catch(() => {});
+      }
 
     } else if (result.action === 'retry') {
       const msg = formatReviewFailed({
