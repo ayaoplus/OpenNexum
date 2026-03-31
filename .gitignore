@@ -5,3 +5,5 @@ dist/
 nexum/runtime/
 nexum/active-tasks.json
 nexum/events.jsonl
+nexum/dispatch-queue.jsonl
+nexum/events.jsonl
