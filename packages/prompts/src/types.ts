@@ -25,7 +25,7 @@ export interface ContractEvalStrategy {
 export interface Contract {
   id: string;
   name: string;
-  type: 'coding' | 'task' | 'creative' | string;
+  type: 'coding' | 'task' | string;
   scope: ContractScope;
   deliverables: ContractDeliverable[];
   eval_strategy: ContractEvalStrategy;

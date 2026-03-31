@@ -25,7 +25,7 @@ export interface EvalSummary {
   criteriaResults: CriterionResult[];
 }
 
-const CONTRACT_TYPES = new Set<ContractType>(["coding", "task", "creative"]);
+const CONTRACT_TYPES = new Set<ContractType>(["coding", "task"]);
 const EVAL_STRATEGY_TYPES = new Set<EvalStrategyType>([
   "unit",
   "integration",

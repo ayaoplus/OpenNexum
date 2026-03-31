@@ -1,4 +1,4 @@
-export type ContractType = "coding" | "task" | "creative";
+export type ContractType = "coding" | "task";
 
 export type EvalStrategyType = "unit" | "integration" | "review" | "e2e" | "composite";
 

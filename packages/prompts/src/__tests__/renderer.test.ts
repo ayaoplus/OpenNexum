@@ -33,6 +33,7 @@ const baseContext: PromptContext = {
   task: { id: 'NX-TEST', name: 'Test Task' },
   gitCommitCmd: 'git add -- src/foo.ts && git commit -m "feat(nx-test): implement test"',
   evalResultPath: 'nexum/runtime/eval/NX-TEST.json',
+  fieldReportPath: 'nexum/runtime/field-reports/NX-TEST.md',
   lessons: [],
 };
 
@@ -89,25 +90,13 @@ describe('renderGeneratorPrompt', () => {
     expect(result).toContain('git add -- src/foo.ts');
   });
 
-  it('uses generator-coding template for type=coding', () => {
+  it('uses generator template for type=coding', () => {
     const result = renderGeneratorPrompt(baseContext);
-    // coding template should contain "coding" context
     expect(typeof result).toBe('string');
     expect(result.length).toBeGreaterThan(0);
   });
 
-  it('uses generator-writing template for type=creative', () => {
-    const creativeContext: PromptContext = {
-      ...baseContext,
-      contract: { ...baseContract, type: 'creative' },
-    };
-    const codingResult = renderGeneratorPrompt(baseContext);
-    const writingResult = renderGeneratorPrompt(creativeContext);
-    // writing template should differ from coding template
-    expect(writingResult).not.toBe(codingResult);
-  });
-
-  it('uses generator-coding template for type=task', () => {
+  it('uses generator template for type=task', () => {
     const taskContext: PromptContext = {
       ...baseContext,
       contract: { ...baseContract, type: 'task' },
@@ -197,19 +186,6 @@ describe('built artifact (dist/index.js)', () => {
     const result = mod.renderGeneratorPrompt(baseContext);
     expect(result).not.toMatch(/\{\{[^}]+\}\}/);
     expect(result).toContain('Test Task');
-  });
-
-  it('renderGeneratorPrompt from built artifact works for creative type', async () => {
-    const fileUrl = new URL(`file://${distIndexPath}`).href;
-    const mod = await import(/* @vite-ignore */ fileUrl);
-    const creativeContext: PromptContext = {
-      ...baseContext,
-      contract: { ...baseContract, type: 'creative' },
-    };
-    const codingResult = mod.renderGeneratorPrompt(baseContext);
-    const writingResult = mod.renderGeneratorPrompt(creativeContext);
-    expect(writingResult).not.toBe(codingResult);
-    expect(writingResult).not.toMatch(/\{\{[^}]+\}\}/);
   });
 
   it('renderEvaluatorPrompt from built artifact outputs YAML format', async () => {

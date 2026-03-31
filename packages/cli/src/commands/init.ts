@@ -254,7 +254,6 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
     "claude-gen-02": buildInitAgent("claude", "sonnet-4-6"),
     "claude-eval-01": buildInitAgent("claude", "sonnet-4-6"),
     "claude-plan-01": buildInitAgent("claude", "opus-4-6"),
-    "claude-write-01": buildInitAgent("claude", "sonnet-4-6"),
   };
 
   // Build full config

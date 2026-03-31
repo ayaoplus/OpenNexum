@@ -20,10 +20,6 @@ export function autoSelectGenerator(
     return matchedRule.generator;
   }
 
-  if (contract.type === 'creative') {
-    return resolvePreferredAgent(config, 'claude', ['claude-write-01'], ['-write-', '-gen-']);
-  }
-
   const contractName = contract.name.toLowerCase();
 
   if (
