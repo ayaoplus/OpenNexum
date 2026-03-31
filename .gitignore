@@ -2,7 +2,11 @@ node_modules/
 dist/
 .turbo/
 *.log
+nexum/.harvest-state.json
+nexum/config.json
 nexum/runtime/
 nexum/active-tasks.json
+nexum/history/*.json
 nexum/events.jsonl
 nexum/dispatch-queue.jsonl
+nexum/session-counter.json

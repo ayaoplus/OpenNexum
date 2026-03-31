@@ -85,7 +85,7 @@ git push -u origin HEAD
 # 3. 任务完成，调用：
 nexum callback <taskId>
 # → 更新 status → generator_done
-# → 发 Telegram 通知编排者触发 eval
+# → 发 OpenClaw 通知并触发后续编排
 ```
 
 ### 无变更处理

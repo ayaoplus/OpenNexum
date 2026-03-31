@@ -2,62 +2,65 @@
 
 Contract-driven multi-agent orchestration for AI coding workflows.
 
-OpenNexum 通过 Contract YAML 定义任务边界，自动编排 generator（写代码）和 evaluator（审代码）的执行、重试、升级全流程。基于 OpenClaw ACP 协议，支持 Claude Code 和 Codex 并行执行。
+OpenNexum 通过 Contract YAML 描述任务边界、交付物、评审标准和依赖关系，再把这些静态语义同步到 `nexum/active-tasks.json` 作为运行时状态。执行层完全交给 OpenClaw ACP，仓库侧只负责 contract、prompt、state、notify。
 
 ## 核心特性
 
-- **Contract-first**：每个任务有明确的 scope / deliverables / criteria
-- **Cross-review**：Codex 写的由 Claude 审，Claude 写的由 Codex 审
-- **事件驱动编排**：callback 触发 eval → retry → unlock → next-task，全自动
-- **Webhook dispatch**：通过 OpenClaw `/hooks/agent` 实时唤醒编排者，dispatch-queue 兜底
-- **Dispatch Queue 兜底**：callback 写 `nexum/dispatch-queue.jsonl`，watch 心跳重放 webhook，避免丢失唤醒信号
-- **自动路由**：`generator: auto` 按任务类型自动选择最优 Agent
-- **并行执行**：独立 ACP session，多任务同时运行
-- **Escalation**：超过重试上限或 feedback 重复时自动升级，通知人工介入
-- **Telegram 通知**：通过 OpenClaw 统一推送，覆盖 8 种通知类型
-- **Watch 守护进程**：卡死检测，macOS launchctl / Linux systemd
-- **Batch 进度**：`nexum status` 按 batch 显示当前批次进度 + 总体进度
+- **Contract-first**: Contract 是任务静态语义的单一事实来源
+- **Runtime sync**: `nexum sync` 负责把 contract 注册到运行时状态，不再手工改 `active-tasks.json`
+- **Cross-review**: generator 和 evaluator 分离，支持 Codex / Claude 交叉评审
+- **ACP-only**: 所有执行统一走 OpenClaw ACP
+- **Dispatch queue + webhook**: 实时唤醒和兜底重放同时存在
+- **Replay-safe state machine**: `track` / `callback` / `complete` 对重复和乱序事件做 no-op 防护
+- **Batch progress**: `nexum status` 支持当前批次与总体进度
+- **OpenClaw messaging**: 所有通知统一走 `openclaw message send`
 
 ## 安装
 
 ```bash
 # 前置要求：Node.js >=20, pnpm, openclaw
-git clone https://github.com/ayaoplus/OpenNexum.git
+git clone <repo-url>
 cd OpenNexum
-pnpm install && pnpm build
+pnpm install
+pnpm build
 
 # 全局安装 nexum CLI
-PNPM_HOME=$HOME/Library/pnpm pnpm add -g ./packages/cli
+pnpm add -g ./packages/cli
 ```
 
 ## 快速开始
 
 ```bash
-# 1. 初始化项目（交互式向导）
+# 1. 初始化项目
 nexum init --project /path/to/project
 
-# 2. 写 Contract YAML
+# 2. 编写 Contract
 # docs/nexum/contracts/TASK-001.yaml
 
-# 3. 注册任务到 active-tasks.json，然后生成 spawn payload
+# 3. 同步 contract -> runtime state
+nexum sync TASK-001 --project /path/to/project
+
+# 4. 生成 generator payload
 nexum spawn TASK-001 --project /path/to/project
 
-# 4. 编排者读取 payload.runtimeAgentId，
-#    调用 sessions_spawn 派发 ACP session，成功后立刻记录 session
-nexum track TASK-001 <sessionKey> --project /path/to/project --role generator
+# 5. orchestrator 使用 payload.runtimeAgentId 调用 sessions_spawn
+#    成功后立刻写回真实 session
+nexum track TASK-001 <sessionKey> \
+  --project /path/to/project \
+  --role generator \
+  --stream-log /tmp/TASK-001-gen.jsonl
 
-# 5. Agent 完成后调用
+# 6. generator 完成后回调
 nexum callback TASK-001 --project /path/to/project \
   --model gpt-5.4 \
   --input-tokens 12345 \
   --output-tokens 2048
-# → 自动写 dispatch-queue + 触发 webhook → 编排者执行 nexum eval + 派发 evaluator
 
-# 6. Evaluator 完成后同样调用 nexum callback --role evaluator
-# → 自动 complete/retry/escalate
+# 7. evaluator 完成后回调
+nexum callback TASK-001 --project /path/to/project --role evaluator
 ```
 
-## Contract YAML 格式
+## Contract YAML
 
 ```yaml
 id: TASK-001
@@ -75,7 +78,8 @@ scope:
     - src/feature.ts
     - src/feature.test.ts
   boundaries: []
-  conflicts_with: []
+  conflicts_with:
+    - TASK-002
 
 description: "..."
 
@@ -84,85 +88,70 @@ deliverables:
     description: "..."
 
 eval_strategy:
-  type: review   # review | unit | integration | e2e | composite
+  type: review
   criteria:
     - id: C1
-      desc: "..."
+      desc: "feature works as contracted"
+      method: review
+      threshold: pass
       weight: 2
 
 max_iterations: 3
 depends_on: []
 ```
 
-`deliverables` 支持对象格式（推荐）和旧的字符串数组格式；criteria 至少需要 `id` + `desc`，可选 `method` / `threshold` / `weight`。
+`deliverables` 支持对象数组和旧的字符串数组。`generator` / `evaluator` 既支持顶层字段，也支持 `agent.generator` / `agent.evaluator`。
 
-## Agent 命名规范
+## Spawn Payload
 
-格式：`<model>-<role>-<number>`
+`nexum spawn` / `nexum eval` / retry payload 都会输出统一结构：
 
-| Agent ID | 默认执行 backend | 用途 |
-|---|---|
-| codex-gen-01~03 | `acp/codex` | 后端/API 代码 |
-| claude-gen-01~02 | `acp/claude` | 前端/文档 |
-| codex-eval-01 | `acp/codex` | 审 claude 的代码 |
-| claude-eval-01 | `acp/claude` | 审 codex 的代码 |
-| claude-plan-01 | `acp/claude` | 架构规划（opus）|
+- `agentId`: 逻辑 agent ID，用于路由、通知、归属
+- `agentCli`: 逻辑 agent 对应的 CLI 家族
+- `runtime`: 当前固定为 `acp`
+- `runtimeAgentId`: orchestrator 真正传给 `sessions_spawn` 的 backend
+- `phase`: `generator` 或 `evaluator`
+- `constraints`: `dependsOn` / `conflictsWith` / `scopeFiles` / `scopeBoundaries`
 
-## Spawn Payload 约定
+对 orchestrator 的要求很简单：执行永远跟 `runtimeAgentId` 走，调度约束永远跟 `constraints` 走，不要把 `agentId` 当底层 backend。
 
-`nexum spawn` / `nexum eval` / `retryPayload` 里的关键字段含义如下：
+## Dispatch Flow
 
-- `agentId`: 逻辑 agent ID，用于路由、通知、评审归属
-- `agentCli`: 该逻辑 agent 对应的 CLI 家族（`codex` / `claude`）
-- `runtime`: 编排层应使用的执行 runtime（当前固定为 `acp`）
-- `runtimeAgentId`: 编排层真正传给 runtime 的 agent/backend ID
-
-对编排层来说，`sessions_spawn` 应使用 `payload.runtimeAgentId`，不要把 `agentId` 直接当成底层 backend。
-
-## Dispatch 架构
-
-```
-generator 完成
-    ↓
-nexum callback → 写 dispatch-queue.jsonl（兜底）
-    + POST /hooks/agent → 实时唤醒编排者
-    ↓
-编排者（小明）收到通知
-    → nexum eval → sessions_spawn evaluator → nexum track --role evaluator
-
-evaluator 完成
-    ↓
-nexum callback --role evaluator → 写 dispatch-queue.jsonl
-    + POST /hooks/agent
-    ↓
-编排者处理 complete/retry/escalate
-
-[兜底] watch 心跳扫描 dispatch-queue.jsonl → 重放 webhook，重新唤醒编排者
+```text
+contract -> nexum sync -> active-tasks runtime state
+        -> nexum spawn -> sessions_spawn(generator) -> nexum track
+        -> nexum callback(generator)
+        -> dispatch-queue + POST /hooks/agent
+        -> nexum eval -> sessions_spawn(evaluator) -> nexum track
+        -> nexum callback(evaluator)
+        -> nexum complete(pass|fail|escalated)
+        -> unlock / retry / escalate
 ```
 
-## CLI 命令
+`watch` 会定期重放 `dispatch-queue`，同时做卡死检测。重复 webhook、重复 callback、晚到 track 都会被归一化为 no-op，而不是把任务状态倒退。
+
+## CLI
 
 ```bash
-nexum init [--project <dir>] [--yes]       # 初始化项目
-nexum spawn <taskId> [--project <dir>]     # 生成 spawn payload
-nexum track <taskId> <sessionKey> [--role evaluator]  # 记录 ACP session
-nexum callback <taskId> [--role evaluator] # 任务完成回调
-nexum eval <taskId>                        # 生成 evaluator payload
-nexum complete <taskId> <pass|fail|escalated>  # 处理 eval 结果
-nexum status [--project <dir>]             # 显示任务进度（按 batch）
-nexum archive [--project <dir>]            # 归档 done 任务
-nexum health [--project <dir>]             # 卡死检测
-nexum watch [--interval <min>]             # dispatch heartbeat + health daemon
-nexum ls [--project <dir>]                 # 任务列表
-nexum retry <taskId> --force               # 重置 escalated 任务
-nexum watch install|status|list            # Watch 守护进程管理
+nexum init [--project <dir>] [--yes]
+nexum sync [taskId] [--project <dir>]
+nexum spawn <taskId> [--project <dir>]
+nexum eval <taskId> [--project <dir>]
+nexum track <taskId> <sessionKey> [--role generator|evaluator]
+nexum callback <taskId> [--role generator|evaluator]
+nexum complete <taskId> <pass|fail|escalated>
+nexum retry <taskId> --force
+nexum status [--project <dir>] [--json] [--batch <name>]
+nexum archive [--project <dir>]
+nexum health [--project <dir>]
+nexum watch [--interval <min>] [--timeout <min>]
 ```
 
-## OpenClaw Webhook 配置
+## Webhook Config
 
-在 `~/.openclaw/openclaw.json` 中启用：
+`~/.openclaw/openclaw.json`:
 
-```json5
+```json
 {
   "hooks": {
     "enabled": true,
@@ -171,20 +160,22 @@ nexum watch install|status|list            # Watch 守护进程管理
 }
 ```
 
-在 nexum 项目 `nexum/config.json` 中配置：
+`nexum/config.json`:
 
 ```json
 {
   "webhook": {
     "gatewayUrl": "http://127.0.0.1:18789",
-    "token": "your-secret-token"
+    "token": "your-secret-token",
+    "agentId": "orchestrator"
   }
 }
 ```
 
-也可通过环境变量：`OPENCLAW_HOOKS_TOKEN=your-secret-token`
+也可以通过环境变量 `OPENCLAW_HOOKS_TOKEN` 提供 token。
 
 ## Git 规范
 
-- 直接 push 到 `main`，快速迭代，出问题直接 revert
-- Commit message 使用英文 Conventional Commits：`feat(scope): TASK-ID: description`
+- 直接 push 到 `main`
+- commit message 使用英文 Conventional Commits
+- `scope.files` 会进入建议的 `git add -- ...` 命令

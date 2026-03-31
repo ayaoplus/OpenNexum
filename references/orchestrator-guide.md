@@ -1,161 +1,130 @@
 # Orchestrator Guide
 
-本指南面向负责调度 OpenNexum TS 的 AI 编排者、脚本或服务。目标是把 `nexum` CLI 生成的 payload 安全地转换为 ACP session，并在整个执行过程中维护可追踪状态。
+本指南面向负责调度 OpenNexum 的 orchestrator、脚本或服务。
 
-## Role Split
+目标只有一个：把 `nexum` 产出的 payload 稳定转换成 ACP session，并在整个执行过程中维持正确、可重放的状态。
 
-OpenNexum TS 和 orchestrator 的职责边界应当明确：
+## 1. Role Split
 
-- `nexum` CLI: 生成 prompt、管理任务状态、处理评估结果、发送通知
-- orchestrator: 调用 `sessions_spawn`、保存 session 输出、执行 heartbeat、在适当时机调用 `track` / `eval` / `complete`
+- `nexum` CLI: contract sync、prompt 生成、状态推进、通知、评审决策
+- orchestrator: 调用 `sessions_spawn`、保存流式日志、心跳轮询、在正确时机调用 `track` / `callback`
 
-这样做的原因很简单：任务语义属于仓库，运行时控制属于编排层。
+不要把这两层混起来。仓库语义归 `nexum`，运行时控制归 orchestrator。
 
-## From `nexum spawn` to `sessions_spawn`
+## 2. Always Start with `sync`
 
-`nexum spawn <taskId>` 和 `nexum eval <taskId>` 都会输出 JSON payload。编排者应把它看成“逻辑任务 + ACP backend”两层信息，而不是只取一个 `agentId` 字段。
-
-常见映射关系如下：
-
-| Field | Source | Meaning |
-| --- | --- | --- |
-| logical agent | `payload.agentId` | Contract-selected generator or evaluator, used for routing / attribution |
-| runtime | `payload.runtime` | Execution runtime, currently fixed to `acp` |
-| runtime agent | `payload.runtimeAgentId` | The ACP backend agent ID passed to `sessions_spawn` |
-| CLI family | `payload.agentCli` | Human-readable backend family (`codex` / `claude`) |
-| task | `payload.promptContent` or task file wrapper | The actual prompt/instruction payload |
-| cwd | `payload.cwd` | Working directory for the agent |
-| streamTo | orchestrator-defined path or sink | Where streaming logs should be written |
-
-对 `acp` runtime，一个推荐的概念请求如下：
-
-```json
-{
-  "runtime": "acp",
-  "agentId": "codex",
-  "task": "contents of payload.promptContent",
-  "cwd": "/Users/tongyaojin/code/nexum-ts",
-  "streamTo": "/tmp/nexum/NX2-005-gen.jsonl"
-}
-```
-
-如果你的环境不是直接把 prompt 文本放进 `task` 字段，而是传 `task-file`、URI 或附件句柄，也可以做适配。关键点不是字段名表面一致，而是要保留这几层语义：逻辑 agent、ACP backend、任务内容、工作目录、日志流目标。
-
-## Recommended Spawn Sequence
-
-1. Run `nexum spawn <taskId>` or `nexum eval <taskId>`.
-2. Parse the JSON payload.
-3. Call `sessions_spawn` with `payload.runtimeAgentId`, `task`, `cwd`, and `streamTo`.
-4. Capture `sessionKey`.
-5. Capture `streamLogPath` if the runtime returns one.
-6. Persist both by calling:
+在处理某个 task 前，先确保 runtime state 和 contract 对齐：
 
 ```bash
-nexum track <taskId> <sessionKey> --stream-log <streamLogPath>
+nexum sync TASK-001 --project /path/to/project
 ```
 
-`track` 会写回 `nexum/active-tasks.json`，把 session 信息记录下来，并把任务推进到真实的 `running` / `evaluating`。generator / evaluator 的 session key 和 stream log 会分别保留，随后 `nexum status` 就能展示当前活跃 session，并保留另一阶段的排障线索。
+这一步会注册新任务、补齐依赖状态、同步 name / contract_path / depends_on。
 
-## Heartbeat / Polling Logic
+## 3. Spawn Payload Contract
 
-当前仓库里已有一套明确的 heartbeat 逻辑，来源于 `packages/spawn/src/status.ts`：
+`nexum spawn <taskId>` 和 `nexum eval <taskId>` 都返回 JSON payload。关键字段如下：
 
-- 默认超时: `5 * 60 * 1000` ms，即 5 分钟
-- 默认轮询间隔: `1000` ms，即 1 秒
-- 状态来源: `openclaw sessions list --json`
-- session 匹配键: `key`、`sessionKey`、`childSessionKey`
+| Field | Meaning |
+| --- | --- |
+| `agentId` | 逻辑 agent，用于路由和归属 |
+| `agentCli` | 逻辑 agent 所属 CLI 家族 |
+| `runtime` | 当前固定为 `acp` |
+| `runtimeAgentId` | 真正传给 `sessions_spawn` 的 backend |
+| `phase` | `generator` 或 `evaluator` |
+| `constraints.dependsOn` | 必须先完成的上游任务 |
+| `constraints.conflictsWith` | 当前不应并发的任务 |
+| `constraints.scopeFiles` | 预计修改的文件 |
+| `promptContent` | 实际 prompt |
+| `cwd` | 工作目录 |
 
-归一化后的状态只有四种：
+执行时只跟 `runtimeAgentId` 走，不要把 `agentId` 当 backend。
 
-- `running`
-- `done`
-- `failed`
-- `unknown`
-
-状态归一化规则摘要：
-
-- 若原始状态是 `running`、`done`、`failed`，直接使用
-- 若原始状态是 `completed`、`complete`、`succeeded`，归一化为 `done`
-- 若原始状态是 `error`、`aborted`，归一化为 `failed`
-- 若记录中存在 `endedAt` 或 `completedAt`，则视为结束；若同时带有错误字段则记为 `failed`
-- 若不存在匹配 session，则返回 `unknown`
-
-推荐心跳伪流程：
+## 4. Recommended Sequence
 
 ```text
-while before deadline:
-  query sessions list
-  find record by sessionKey
-  normalize status
-  if done:
-    continue workflow
-  if failed:
-    mark failure / escalate
-  if unknown:
-    decide whether to retry lookup or inspect stream log
-  sleep 1s
-timeout => escalate or mark infrastructure failure
+1. nexum sync TASK-001
+2. nexum spawn TASK-001
+3. sessions_spawn(runtime="acp", agentId=payload.runtimeAgentId, ...)
+4. nexum track TASK-001 <sessionKey> --role generator --stream-log <path>
+5. wait for generator completion
+6. nexum callback TASK-001 --role generator
+7. nexum eval TASK-001
+8. sessions_spawn(...) for evaluator
+9. nexum track TASK-001 <sessionKey> --role evaluator --stream-log <path>
+10. wait for evaluator completion
+11. nexum callback TASK-001 --role evaluator
 ```
 
-## Stream Log Handling
+## 5. Why `track` Matters
 
-如果 `sessions_spawn` 支持把流式输出写入 JSONL，编排者应始终启用。当前 `nexum status` 的展示逻辑会：
+`track` 是任务进入真实运行态的唯一显式入口：
 
-- 读取 `acp_stream_log`
-- 解析 JSONL
-- 选取含有 `text` 字段的最近两条非空事件
-- 每条截断到 80 个字符
-- 组合为单行活动摘要
+- generator track: `pending -> running`
+- evaluator track: `generator_done -> evaluating`
 
-这意味着 `streamTo` 最好指向一个稳定可读的文件路径，而不是仅发送到标准输出。
+如果同一个 session 被重复 track，CLI 会返回 no-op。
+如果晚到 track 试图把任务从更后状态拉回去，CLI 也会返回 no-op。
 
-## Generator and Evaluator Loop
+## 6. Callback Expectations
 
-推荐把 generator 和 evaluator 看作同一套编排模板的两次实例化：
+`callback` 也必须按角色调用：
 
-1. `nexum spawn <taskId>`
-2. spawn generator ACP session
-3. `nexum track ...`
-4. heartbeat until generator finishes
-5. `nexum eval <taskId>`
-6. spawn evaluator ACP session
-7. `nexum track ...` for evaluator if you maintain a separate stream
-8. heartbeat until evaluator finishes
-9. `nexum complete <taskId> <verdict>`
+- generator 结束后: `nexum callback <taskId> --role generator`
+- evaluator 结束后: `nexum callback <taskId> --role evaluator`
 
-如果 `complete` 返回：
+回调处理是 replay-safe 的：
 
-- `action: "done"`: task closed, optional downstream tasks unlocked
-- `action: "retry"`: use `retryPayload` to spawn the next generator iteration
-- `action: "failed"`: no more retries, task stops
-- `action: "escalated"`: human intervention required
+- 重复 generator callback 不会再次 dispatch evaluator
+- stale evaluator callback 不会重新处理已经 retry 的任务
+- terminal 状态上的重复回调会返回 no-op
 
-## Practical Guidance
+## 7. Dispatch Queue
 
-- Always persist `sessionKey` immediately after spawn succeeds.
-- Always store a stream log path if the runtime can provide one.
-- Treat `unknown` as an infrastructure signal, not a business verdict.
-- Keep `cwd` equal to the project root returned by the payload unless you have a strong reason not to.
-- Treat `payload.agentId` as a logical identifier only; execution should follow `payload.runtimeAgentId`.
-- Claude logical agents default to `acp/claude`; do not rewrite them to codex.
-- Prefer idempotent orchestration steps so you can resume after partial failure.
+每次自动 dispatch 都会：
 
-## Minimal Example
+1. 先写 `nexum/dispatch-queue.jsonl`
+2. 再 POST `/hooks/agent`
+
+如果 webhook 丢了：
+
+- `nexum watch` 会重放 queue
+- 一旦 `track` 或后续状态推进成功，对应 queue entry 会被 ack
+
+因此 orchestrator 不需要自己维护第二套 dispatch 持久层。
+
+## 8. Session Naming
+
+session 名会根据实际执行家族生成：
+
+- `codex-gen-01`
+- `claude-eval-02`
+
+这不是装饰字段。它用于日志和排障，应该跟实际 backend 一致。
+
+## 9. Minimal Example
 
 ```text
-payload = nexum spawn NX2-005
+payload = nexum spawn TASK-001
 session = sessions_spawn(
   runtime="acp",
   agentId=payload.runtimeAgentId,
   task=payload.promptContent,
   cwd=payload.cwd,
-  streamTo="/tmp/nexum/NX2-005-gen.jsonl"
+  streamTo="/tmp/TASK-001-gen.jsonl"
 )
-nexum track NX2-005 session.sessionKey --stream-log /tmp/nexum/NX2-005-gen.jsonl
-heartbeat(session.sessionKey)
-payload2 = nexum eval NX2-005
+nexum track TASK-001 session.sessionKey --role generator --stream-log /tmp/TASK-001-gen.jsonl
 ...
-nexum complete NX2-005 pass
+nexum callback TASK-001 --role generator
+payload2 = nexum eval TASK-001
+...
+nexum callback TASK-001 --role evaluator
 ```
 
-把这套顺序稳定下来后，OpenNexum TS 就能作为一个清晰的 contract engine，而 ACP runtime 则作为纯执行层被复用。这样最容易扩展，也最容易排错。
+## 10. Operational Rules
+
+- Spawn 前先检查 `constraints.dependsOn` 和 `constraints.conflictsWith`
+- spawn 成功后立即 `track`
+- 能保存 stream log 就一定保存
+- 把 `unknown` session status 当基础设施信号，不要当业务 verdict
+- 对任何 webhook / callback / track 都按幂等思路设计
