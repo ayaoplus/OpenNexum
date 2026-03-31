@@ -5,7 +5,9 @@ import type {
   Contract,
   ContractCriterion,
   ContractEvalStrategy,
-  ContractScope
+  ContractScope,
+  ContractType,
+  EvalStrategyType
 } from "./types";
 
 export interface CriterionResult {
@@ -21,6 +23,13 @@ export interface EvalSummary {
   totalCount: number;
   criteriaResults: CriterionResult[];
 }
+
+const CONTRACT_TYPES = new Set<ContractType>(["coding", "task", "creative"]);
+const EVAL_STRATEGY_TYPES = new Set<EvalStrategyType>([
+  "unit",
+  "integration",
+  "review"
+]);
 
 export async function parseContract(filePath: string): Promise<Contract> {
   const source = await readFile(filePath, "utf8");
@@ -77,12 +86,88 @@ export async function parseEvalResult(filePath: string): Promise<EvalSummary> {
   }
 }
 
+export function validateContract(contract: Contract): string[] {
+  const errors: string[] = [];
+  const record = contract as unknown as Record<string, unknown>;
+
+  requireString(record.id, "id", errors);
+  requireString(record.name, "name", errors);
+  requireEnum(record.type, "type", CONTRACT_TYPES, errors);
+  requireString(record.created_at, "created_at", errors);
+  requireString(record.generator, "generator", errors);
+  requireString(record.evaluator, "evaluator", errors);
+
+  if (typeof record.max_iterations !== "number") {
+    errors.push("Missing or invalid field: max_iterations");
+  }
+
+  const scope = record.scope;
+  if (!isPlainObject(scope)) {
+    errors.push("Missing or invalid field: scope");
+  } else {
+    requireStringArray(scope.files, "scope.files", errors);
+    requireStringArray(scope.boundaries, "scope.boundaries", errors);
+    requireStringArray(scope.conflicts_with, "scope.conflicts_with", errors);
+  }
+
+  requireStringArray(record.deliverables, "deliverables", errors);
+  requireStringArray(record.depends_on, "depends_on", errors);
+
+  const evalStrategy = record.eval_strategy;
+  if (!isPlainObject(evalStrategy)) {
+    errors.push("Missing or invalid field: eval_strategy");
+  } else {
+    requireEnum(evalStrategy.type, "eval_strategy.type", EVAL_STRATEGY_TYPES, errors);
+
+    if (!Array.isArray(evalStrategy.criteria)) {
+      errors.push("Missing or invalid field: eval_strategy.criteria");
+    } else {
+      evalStrategy.criteria.forEach((criterion, index) => {
+        if (!isPlainObject(criterion)) {
+          errors.push(`Invalid criterion at eval_strategy.criteria[${index}]`);
+          return;
+        }
+
+        requireString(criterion.id, `eval_strategy.criteria[${index}].id`, errors);
+        requireString(criterion.desc, `eval_strategy.criteria[${index}].desc`, errors);
+        requireString(criterion.method, `eval_strategy.criteria[${index}].method`, errors);
+        requireString(criterion.threshold, `eval_strategy.criteria[${index}].threshold`, errors);
+      });
+    }
+  }
+
+  return errors;
+}
+
 function parseQuotedScalar(raw: string | undefined): string {
   if (!raw) {
     return "";
   }
 
   return raw.trim().replace(/^["']|["']$/g, "");
+}
+
+function requireString(value: unknown, field: string, errors: string[]): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    errors.push(`Missing or invalid field: ${field}`);
+  }
+}
+
+function requireStringArray(value: unknown, field: string, errors: string[]): void {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    errors.push(`Missing or invalid field: ${field}`);
+  }
+}
+
+function requireEnum<T extends string>(
+  value: unknown,
+  field: string,
+  allowed: Set<T>,
+  errors: string[]
+): void {
+  if (typeof value !== "string" || !allowed.has(value as T)) {
+    errors.push(`Missing or invalid field: ${field}`);
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
