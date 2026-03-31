@@ -1,7 +1,7 @@
 # OpenNexum 架构设计文档
 
-> 最后更新：2026-03-30
-> 版本：v2（全面重构后）
+> 最后更新：2026-03-31
+> 版本：v2.1（webhook dispatch + dispatch-queue 兜底）
 
 ---
 
@@ -13,7 +13,8 @@ OpenNexum 是一个 **Contract-driven 多 Agent 编排系统**，通过 TypeScri
 - Contract 先行：每个任务在执行前必须有 YAML 定义（scope / deliverables / criteria）
 - Generator ≠ Evaluator：写代码和审代码由不同 Agent 完成（GAN 原则）
 - 事件驱动：callback 触发 eval/retry/unlock，不依赖轮询
-- Watch 兜底：守护进程只做卡死检测，不做 dispatch
+- 双路 dispatch 兜底：webhook 实时 + dispatch-queue 心跳兜底，不丢任务
+- Watch 守护进程：只做卡死检测，检测到卡死时自动唤醒编排者处理
 
 ---
 
@@ -21,9 +22,9 @@ OpenNexum 是一个 **Contract-driven 多 Agent 编排系统**，通过 TypeScri
 
 ```
 packages/
-├── core/          # 基础能力：类型、任务管理、配置、Contract 解析、Git
+├── core/          # 基础能力：类型、任务管理、配置、Contract 解析（js-yaml）、Git、parseEvalResult
 ├── prompts/       # Prompt 模板渲染（generator / evaluator / retry）
-├── spawn/         # ACP session 管理（直接调 acpx）
+├── spawn/         # ACP session 状态查询（spawnAcpSession 已为 no-op，spawn 由编排者调用 sessions_spawn）
 ├── notify/        # 通知模板 + 发送（通过 openclaw message send）
 └── cli/           # nexum 命令行入口
     ├── commands/  # 各子命令实现
@@ -58,30 +59,43 @@ pending → running → generator_done → evaluating → done
 
 ---
 
-## 四、编排流程（事件驱动）
+## 四、编排流程（事件驱动 + 双路 dispatch）
 
 ```
 1. 编排者写 Contract YAML → 注册到 active-tasks.json
-2. nexum spawn <taskId> → 生成 prompt → 状态: running
-3. spawnAcpSession → acpx <cli> -s <session> exec -f <prompt> --no-wait
-4. Generator 完成 → git commit + push → nexum callback --role generator
+2. nexum spawn <taskId> → 生成 prompt 文件 → 状态: running
+3. 编排者调用 sessions_spawn(promptFile) → ACP session 启动
+4. nexum track <taskId> <sessionKey> → 记录 session + 发派发通知
+
+5. Generator 完成 → git commit + push → nexum callback --role generator
    ↓ callback 自动执行:
    a. 状态 → generator_done
    b. 发通知 [1/2] 代码编写完成
-   c. 自动 spawn evaluator (acpx claude -s claude-eval-<taskId>)
+   c. 写 nexum/dispatch-queue.jsonl（兜底）
+   d. POST /hooks/agent → 实时唤醒编排者
+   e. 编排者收到 webhook → nexum eval → sessions_spawn evaluator
 
-5. Evaluator 完成 → 写 eval YAML → nexum callback --role evaluator
+6. Evaluator 完成 → 写 eval YAML → nexum callback --role evaluator
    ↓ callback 自动执行:
    a. 读 eval YAML → 判断 verdict
    b. verdict=pass → complete → 状态: done → 发通知 [2/2] 审查通过
-      → 解锁下游任务 → 自动 spawn 下一个 pending generator
-   c. verdict=fail → complete → retry → 发通知 审查失败
-      → 自动 spawn retry generator
-   d. iteration >= max → escalated → 发通知 任务升级 → 停止
+      → 如果当前 batch 全部完成 → 发批次总结通知 🎉
+      → 解锁下游任务 → 写 dispatch-queue + POST /hooks/agent
+      → 编排者 spawn 下一个 pending generator
+   c. verdict=fail → retry → 发通知 审查失败
+      → 写 dispatch-queue + POST /hooks/agent
+      → 编排者 spawn retry generator
+   d. iteration >= max 或 feedback 相似度 > 80% → escalated → 发通知 → 停止
 
-6. Watch 守护进程（兜底）:
+7. 兜底机制（dispatch-queue）:
+   - callback 每次 dispatch 前写 nexum/dispatch-queue.jsonl
+   - 心跳（默认 10 分钟）扫描 queue，未处理的自动执行
+   - 保证即使 webhook 失败或编排者不在线，最迟 10 分钟内处理
+
+8. Watch 守护进程（卡死检测）:
    - 每 5 分钟检查所有项目
-   - 发现 30 分钟无更新的 running/evaluating 任务 → 发卡死告警
+   - 发现 30 分钟无更新的 running/evaluating 任务 → 发 Telegram 告警
+   - 同时 POST /hooks/agent 唤醒编排者自动处理
    - 不做 dispatch（dispatch 由 callback 事件驱动）
 ```
 
@@ -111,19 +125,23 @@ pending → running → generator_done → evaluating → done
 ## 六、ACP Session 管理
 
 ### spawn 方式
-```bash
-acpx --approve-all --ttl 0 <cli> -s <agentId> -f <prompt> --no-wait
+由**编排者（小明）**调用 OpenClaw `sessions_spawn` 工具派发：
+```
+sessions_spawn(promptFile, agentId, label, cwd, mode="run")
+→ 返回 childSessionKey
 ```
 
-- `--ttl 0`：防止 idle timeout 杀死 session
-- `-s <agentId>`：命名 session，实现并行隔离
-- `--no-wait`：异步执行，不阻塞调用方
-- `--approve-all`：自动批准所有文件操作
+`spawnAcpSession` 函数保留但为 no-op stub，不再调用 acpx CLI。
 
-### session 命名
-- Generator: `codex-gen-01` / `claude-gen-01`（复用 agent ID）
-- Evaluator: `claude-eval-<taskId>`（每个任务独立 session）
-- Retry generator: 复用原 agent session
+### session 命名（顺序递增）
+- Generator: `codex-gen-01`, `codex-gen-02`, `codex-gen-03`...（全局递增，存 `nexum/session-counter.json`）
+- Evaluator: `claude-eval-01`, `claude-eval-02`...（同一计数器，role=eval）
+- 通知中显示格式：`codex-gen-01 (NEXUM-023)`，并行任务可区分
+
+### session 并行
+- 每个任务独立 ACP session，互不干扰
+- scope 文件不重叠时可安全并行
+- scope 有重叠时用 `depends_on` 串行化
 
 ---
 
@@ -225,5 +243,5 @@ acpx --approve-all --ttl 0 <cli> -s <agentId> -f <prompt> --no-wait
 - `Task.batch` 字段标记任务所属批次
 - `ActiveTasksFile.currentBatch` 标记当前默认批次
 - `nexum status --batch <name>` 过滤显示
-- 进度格式：`📊 v2-redesign: 3/6  |  总体: 13/15`
+- 进度格式：两行显示 `📊 当前批次 (batch-3): 3/6` 和 `📊 总体: 13/15`
 - done 任务超过 20 个时自动归档到 `nexum/history/<batch>.json`

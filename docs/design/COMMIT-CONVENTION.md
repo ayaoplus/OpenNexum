@@ -27,12 +27,14 @@
 ### 示例
 
 ```
-feat(INFRA-001): INFRA-001: 项目骨架搭建 + Polymarket Client 封装
-fix(CLI-042): CLI-042: 修复 eval 状态推进逻辑
-refactor(NX-007): NX-007: 重构 spawn 模块为 async/await
-docs(README): README: 更新部署文档
-chore(CI): CI: 添加 GitHub Actions workflow
+feat(INFRA-001): INFRA-001: project scaffold and Polymarket Client wrapper
+fix(CLI-042): CLI-042: fix eval status transition logic
+refactor(NX-007): NX-007: refactor spawn module to async/await
+docs(README): README: update deployment docs
+chore(CI): CI: add GitHub Actions workflow
 ```
+
+> **重要：** commit message 必须使用英文。task name 为中文时，generator 自动生成英文摘要（从 taskId 推导）。
 
 ---
 
@@ -43,7 +45,7 @@ chore(CI): CI: 添加 GitHub Actions workflow
 | `type` | 变更类型 | 从 task name 关键词自动推断 | `feat` |
 | `scope` | 变更范围 | contract 文件名（task ID 大写） | `INFRA-001` |
 | `taskId` | 任务编号 | task.id | `INFRA-001` |
-| `description` | 简短描述 | contract.name（任务名） | `项目骨架搭建` |
+| `description` | 简短英文描述 | contract.name（ASCII）或 taskId 推导的 slug | `project-scaffold` |
 
 > 注意：`scope` 和 `taskId` 通常一致，冗余保留是为了让 commit 在日志中可直接搜索任务 ID。
 
