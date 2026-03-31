@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -32,6 +32,8 @@ import { runSpawn, runSpawnEval } from './spawn.js';
 const execFileAsync = promisify(execFile);
 const DEFAULT_WEBHOOK_GATEWAY_URL = 'http://127.0.0.1:18789';
 const WEBHOOK_AGENT_PATH = 'hooks/agent';
+const SESSION_COUNTER_FILENAME = 'session-counter.json';
+const SESSION_COUNTER_LOCK_SUFFIX = '.lock';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +46,7 @@ interface CallbackOptions {
 }
 
 type DispatchRole = 'generator' | 'evaluator';
+type SessionRole = 'gen' | 'eval';
 type ContractWithAgentCompat = {
   generator: string;
   evaluator: string;
@@ -104,15 +107,14 @@ async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir
       return false;
     }
 
-    const endpoint = new URL(
-      WEBHOOK_AGENT_PATH,
-      withTrailingSlash(config.webhook?.gatewayUrl?.trim() || DEFAULT_WEBHOOK_GATEWAY_URL)
-    ).toString();
+    const endpoint = resolveWebhookAgentEndpoint(config);
+    const sessionName = await getNextSessionName(role === 'generator' ? 'gen' : 'eval', projectDir);
     const payload = {
       message: `nexum-dispatch: ${taskId} ${role} ${projectDir}`,
       name: 'Nexum',
       agentId: 'main',
       deliver: false,
+      sessionName,
     };
 
     const response = await fetch(endpoint, {
@@ -132,6 +134,7 @@ async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir
       return false;
     }
 
+    console.log(`[callback] webhook payload for ${taskId} includes sessionName=${sessionName}`);
     return true;
   } catch (err) {
     console.warn(`[callback] webhook dispatch failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
@@ -187,7 +190,7 @@ async function writeDispatchQueue(taskId: string, action: DispatchAction, projec
 
 // ─── Webhook Token Resolution ────────────────────────────────────────────────
 
-async function resolveWebhookToken(config: NexumConfig): Promise<string | undefined> {
+export async function resolveWebhookToken(config: Pick<NexumConfig, 'webhook'>): Promise<string | undefined> {
   const envToken = process.env.OPENCLAW_HOOKS_TOKEN?.trim();
   if (envToken) {
     return envToken;
@@ -214,11 +217,18 @@ async function readOpenClawHooksToken(): Promise<string | undefined> {
   }
 }
 
+export function resolveWebhookAgentEndpoint(config: Pick<NexumConfig, 'webhook'>): string {
+  return new URL(
+    WEBHOOK_AGENT_PATH,
+    withTrailingSlash(config.webhook?.gatewayUrl?.trim() || DEFAULT_WEBHOOK_GATEWAY_URL)
+  ).toString();
+}
+
 function withTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
-function summarizeResponse(body: string): string {
+export function summarizeResponse(body: string): string {
   const normalized = body.trim().replace(/\s+/g, ' ');
   if (!normalized) {
     return '';
@@ -232,6 +242,71 @@ function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
 
 function getEvaluatorAgentId(contract: ContractWithAgentCompat): string {
   return contract.agent?.evaluator ?? contract.evaluator;
+}
+
+async function getNextSessionName(role: SessionRole, projectDir: string): Promise<string> {
+  const nexumDir = path.join(projectDir, 'nexum');
+  const counterPath = path.join(nexumDir, SESSION_COUNTER_FILENAME);
+  const lockPath = `${counterPath}${SESSION_COUNTER_LOCK_SUFFIX}`;
+
+  await mkdir(nexumDir, { recursive: true });
+  const releaseLock = await acquireSessionCounterLock(lockPath);
+
+  try {
+    const nextNumber = await readAndBumpSessionCounter(counterPath);
+    const paddedNumber = String(nextNumber).padStart(2, '0');
+    return role === 'gen' ? `codex-gen-${paddedNumber}` : `claude-eval-${paddedNumber}`;
+  } finally {
+    await releaseLock();
+  }
+}
+
+async function acquireSessionCounterLock(lockPath: string): Promise<() => Promise<void>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      const handle = await open(lockPath, 'wx');
+      return async () => {
+        await handle.close().catch(() => {});
+        await unlink(lockPath).catch(() => {});
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  throw new Error(`Timed out waiting for session counter lock: ${lockPath}`);
+}
+
+async function readAndBumpSessionCounter(counterPath: string): Promise<number> {
+  const raw = await readFile(counterPath, 'utf8').catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') {
+      return '';
+    }
+    throw err;
+  });
+  const currentState = parseSessionCounter(raw, counterPath);
+  const nextNumber = currentState.next;
+  const nextState = { next: nextNumber + 1 };
+  const tempPath = `${counterPath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(nextState, null, 2)}\n`, 'utf8');
+  await rename(tempPath, counterPath);
+  return nextNumber;
+}
+
+function parseSessionCounter(raw: string, counterPath: string): { next: number } {
+  if (!raw.trim()) {
+    return { next: 1 };
+  }
+
+  const parsed = JSON.parse(raw) as { next?: unknown };
+  if (!Number.isInteger(parsed.next) || (parsed.next as number) < 1) {
+    throw new Error(`Invalid session counter in ${counterPath}`);
+  }
+
+  return { next: parsed.next as number };
 }
 
 // ─── Generator Callback ──────────────────────────────────────────────────────
@@ -289,10 +364,9 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   await writeDispatchQueue(taskId, 'spawn-evaluator', projectDir);
   try {
     await runSpawnEval(taskId, projectDir);
-    const evalSessionName = `claude-eval-${taskId}`;
     const dispatched = await dispatchViaWebhook(taskId, 'evaluator', projectDir);
     if (dispatched) {
-      console.log(`[callback] auto-dispatched evaluator ${evalSessionName} via webhook`);
+      console.log(`[callback] auto-dispatched evaluator for ${taskId} via webhook`);
     }
   } catch (err) {
     console.warn(`[callback] auto-dispatch evaluator failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
@@ -413,10 +487,9 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
     await writeDispatchQueue(id, 'spawn-next', projectDir);
     try {
       await runSpawn(id, projectDir);
-      const sessionName = `codex-gen-${id}`;
       const dispatched = await dispatchViaWebhook(id, 'generator', projectDir);
       if (dispatched) {
-        console.log(`[callback] auto-dispatched next generator ${sessionName} via webhook`);
+        console.log(`[callback] auto-dispatched next generator for ${id} via webhook`);
       }
     } catch (err) {
       console.warn(`[callback] auto-dispatch generator failed for ${id}: ${err instanceof Error ? err.message : err}`);
