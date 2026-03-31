@@ -29,6 +29,18 @@ function detectCommitType(taskName: string): string {
   return 'feat';
 }
 
+function isAsciiOnly(value: string): boolean {
+  return /^[\x00-\x7F]+$/.test(value);
+}
+
+function taskIdToKebabSlug(taskId: string): string {
+  return taskId.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function toEnglishCommitSummary(name: string, taskId: string): string {
+  return isAsciiOnly(name) ? name : taskIdToKebabSlug(taskId);
+}
+
 export interface SpawnPayload {
   taskId: string;
   taskName: string;
@@ -67,8 +79,6 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
-  const generatorAgentId = getGeneratorAgentId(contract);
-  const evaluatorAgentId = getEvaluatorAgentId(contract);
 
   const iteration = task.iteration ?? 0;
   const evalResultPath = path.join(
@@ -80,11 +90,7 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   );
 
   const config = await loadConfig(projectDir);
-  const contractWithAgents = { ...contract, generator: generatorAgentId, evaluator: evaluatorAgentId };
-  const resolvedContract =
-    generatorAgentId === 'auto' || evaluatorAgentId === 'auto'
-      ? { ...contractWithAgents, ...resolveAgents(contractWithAgents, config) }
-      : contractWithAgents;
+  const resolvedContract = { ...contract, ...resolveAgents(contract, config) };
   // If git.remote is explicitly set to empty string, skip push; otherwise default to 'origin'
   const gitRemoteRaw = config.git?.remote;
   const gitRemote = gitRemoteRaw === '' ? '' : (gitRemoteRaw ?? 'origin');
@@ -92,7 +98,8 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
 
   const type = detectCommitType(resolvedContract.name);
   const scope = taskId.toUpperCase();
-  const commitMsg = `${type}(${scope}): ${taskId}: ${resolvedContract.name}`;
+  const commitSummary = toEnglishCommitSummary(resolvedContract.name, taskId);
+  const commitMsg = `${type}(${scope}): ${taskId}: ${commitSummary}`;
   const gitCommitCmd = gitRemote
     ? [
         `git add -- ${resolvedContract.scope.files.join(' ')}`,

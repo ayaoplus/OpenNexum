@@ -32,9 +32,20 @@ function applyVariables(template: string, vars: Record<string, string>): string 
   );
 }
 
+function isAsciiOnly(value: string): boolean {
+  return /^[\x00-\x7F]+$/.test(value);
+}
+
+function taskIdToKebabSlug(taskId: string): string {
+  return taskId.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 function generatorVars(context: PromptContext): Record<string, string> {
   return {
     TASK_NAME: context.task.name,
+    TASK_NAME_EN: isAsciiOnly(context.task.name)
+      ? context.task.name
+      : taskIdToKebabSlug(context.task.id),
     TASK_ID: context.task.id,
     PROJECT_DIR: context.projectDir ?? process.cwd(),
     SCOPE_FILES: formatList(context.contract.scope.files),
