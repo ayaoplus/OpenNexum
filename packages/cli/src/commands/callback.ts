@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -138,6 +138,34 @@ async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir
   }
 }
 
+// ─── Dispatch Queue (heartbeat fallback) ─────────────────────────────────────
+
+type DispatchAction = 'spawn-evaluator' | 'spawn-retry' | 'spawn-next';
+
+interface DispatchQueueEntry {
+  taskId: string;
+  action: DispatchAction;
+  projectDir: string;
+  createdAt: string;
+}
+
+async function writeDispatchQueue(taskId: string, action: DispatchAction, projectDir: string): Promise<void> {
+  try {
+    const queuePath = path.join(projectDir, 'nexum', 'dispatch-queue.jsonl');
+    const entry: DispatchQueueEntry = {
+      taskId,
+      action,
+      projectDir,
+      createdAt: new Date().toISOString(),
+    };
+    await appendFile(queuePath, JSON.stringify(entry) + '\n', 'utf8');
+  } catch (err) {
+    console.warn(`[callback] failed to write dispatch queue: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+// ─── Webhook Token Resolution ────────────────────────────────────────────────
+
 async function resolveWebhookToken(config: NexumConfig): Promise<string | undefined> {
   const envToken = process.env.OPENCLAW_HOOKS_TOKEN?.trim();
   if (envToken) {
@@ -237,6 +265,7 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   }
 
   // ── Step 3: Auto-dispatch evaluator ──
+  await writeDispatchQueue(taskId, 'spawn-evaluator', projectDir);
   try {
     await runSpawnEval(taskId, projectDir);
     const evalSessionName = `claude-eval-${taskId}`;
@@ -332,6 +361,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
   // ── Step 4: Auto-dispatch next step ──
   if (result.action === 'retry' && result.retryPayload) {
+    await writeDispatchQueue(taskId, 'spawn-retry', projectDir);
     try {
       const dispatched = await dispatchViaWebhook(taskId, 'generator', projectDir);
       if (dispatched) {
@@ -359,6 +389,7 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
     const task = tasks.find((t) => t.id === id && t.status === TaskStatus.Pending);
     if (!task) continue;
 
+    await writeDispatchQueue(id, 'spawn-next', projectDir);
     try {
       await runSpawn(id, projectDir);
       const sessionName = `codex-gen-${id}`;
