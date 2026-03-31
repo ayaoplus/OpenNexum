@@ -8,6 +8,8 @@ import {
   getBatchProgress,
   getTask,
   readTasks,
+  resolveAgentExecution,
+  syncTasksWithContracts,
   updateTask,
   TaskStatus,
   loadConfig,
@@ -30,6 +32,7 @@ import { runComplete } from './complete.js';
 import { enqueueDispatchEntry } from '../lib/dispatch-queue.js';
 import { dispatchAgentWebhook } from '../lib/webhook.js';
 import { resolveContractAgents } from '../lib/resolve-contract-agents.js';
+import type { AgentCli } from '@nexum/core';
 
 const execFileAsync = promisify(execFile);
 const SESSION_COUNTER_FILENAME = 'session-counter.json';
@@ -88,7 +91,11 @@ async function getLastCommitMessage(projectDir: string): Promise<string> {
   }
 }
 
-async function getNextSessionName(role: SessionRole, projectDir: string): Promise<string> {
+async function getNextSessionName(
+  sessionFamily: AgentCli,
+  role: SessionRole,
+  projectDir: string
+): Promise<string> {
   const nexumDir = path.join(projectDir, 'nexum');
   const counterPath = path.join(nexumDir, SESSION_COUNTER_FILENAME);
   const lockPath = `${counterPath}${SESSION_COUNTER_LOCK_SUFFIX}`;
@@ -99,7 +106,7 @@ async function getNextSessionName(role: SessionRole, projectDir: string): Promis
   try {
     const nextNumber = await readAndBumpSessionCounter(counterPath);
     const paddedNumber = String(nextNumber).padStart(2, '0');
-    return role === 'gen' ? `codex-gen-${paddedNumber}` : `claude-eval-${paddedNumber}`;
+    return `${sessionFamily}-${role === 'gen' ? 'gen' : 'eval'}-${paddedNumber}`;
   } finally {
     await releaseLock();
   }
@@ -157,11 +164,21 @@ function parseSessionCounter(raw: string, counterPath: string): { next: number }
 
 async function runGeneratorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
+  await syncTasksWithContracts(projectDir, { taskId });
   const task = await getTask(projectDir, taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
+  if (shouldIgnoreGeneratorCallback(task.status)) {
+    console.log(JSON.stringify({ ok: true, taskId, status: task.status, ignored: true }));
+    return;
+  }
+
+  if (task.status !== TaskStatus.Pending && task.status !== TaskStatus.Running) {
+    throw new Error(`Task ${taskId} cannot process generator callback from status ${task.status}.`);
+  }
+
   const contract = await loadContract(projectDir, task.contract_path);
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined } as NexumConfig));
+  const config = await loadConfig(projectDir);
   const resolvedContract = resolveContractAgents(contract, config);
   const generatorAgentId = resolvedContract.generator;
 
@@ -207,7 +224,8 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 
   // ── Step 3: Auto-dispatch evaluator ──
   try {
-    const sessionName = await getNextSessionName('eval', projectDir);
+    const evaluatorExecution = resolveAgentExecution(config, resolvedContract.evaluator);
+    const sessionName = await getNextSessionName(evaluatorExecution.cli, 'eval', projectDir);
     await enqueueDispatchEntry(projectDir, {
       taskId,
       action: 'spawn-evaluator',
@@ -230,12 +248,22 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 
 async function runEvaluatorCallback(taskId: string, options: CallbackOptions): Promise<void> {
   const projectDir = options.project;
+  await syncTasksWithContracts(projectDir, { taskId });
   const task = await getTask(projectDir, taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
+
+  if (shouldIgnoreEvaluatorCallback(task.status)) {
+    console.log(JSON.stringify({ ok: true, taskId, role: 'evaluator', status: task.status, ignored: true }));
+    return;
+  }
+
+  if (task.status !== TaskStatus.GeneratorDone && task.status !== TaskStatus.Evaluating) {
+    throw new Error(`Task ${taskId} cannot process evaluator callback from status ${task.status}.`);
+  }
   if (!task.eval_result_path) throw new Error(`Task ${taskId} has no eval_result_path`);
 
   const contract = await loadContract(projectDir, task.contract_path);
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined } as NexumConfig));
+  const config = await loadConfig(projectDir);
   const target = config.notify?.target;
   const resolvedContract = resolveContractAgents(contract, config);
   const evaluatorAgentId = resolvedContract.evaluator;
@@ -250,6 +278,10 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
   // ── Step 1+2: Run complete ──
   const result = await runComplete(taskId, verdict, projectDir);
+  if (result.noop) {
+    console.log(JSON.stringify({ ok: true, taskId, role: 'evaluator', verdict, action: result.action, ignored: true }));
+    return;
+  }
 
   // ── Step 3: Notify ──
   if (target) {
@@ -330,7 +362,8 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   // ── Step 4: Auto-dispatch next step ──
   if (result.action === 'retry' && result.retryPayload) {
     try {
-      const sessionName = await getNextSessionName('gen', projectDir);
+      const generatorExecution = resolveAgentExecution(config, resolvedContract.generator);
+      const sessionName = await getNextSessionName(generatorExecution.cli, 'gen', projectDir);
       await enqueueDispatchEntry(projectDir, {
         taskId,
         action: 'spawn-retry',
@@ -348,7 +381,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   }
 
   if (result.action === 'done') {
-    await autoDispatchUnlockedTasks(projectDir, result.unlockedTasks ?? []);
+    await autoDispatchUnlockedTasks(projectDir, result.unlockedTasks ?? [], config);
   }
 
   console.log(JSON.stringify({ ok: true, taskId, role: 'evaluator', verdict, action: result.action }));
@@ -356,7 +389,11 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
 // ─── Auto-dispatch ───────────────────────────────────────────────────────────
 
-async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string[]): Promise<void> {
+async function autoDispatchUnlockedTasks(
+  projectDir: string,
+  unlockedIds: string[],
+  config: NexumConfig
+): Promise<void> {
   if (unlockedIds.length === 0) return;
   const tasks = await readTasks(projectDir);
 
@@ -365,7 +402,10 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
     if (!task) continue;
 
     try {
-      const sessionName = await getNextSessionName('gen', projectDir);
+      const contract = await loadContract(projectDir, task.contract_path);
+      const resolvedContract = resolveContractAgents(contract, config);
+      const generatorExecution = resolveAgentExecution(config, resolvedContract.generator);
+      const sessionName = await getNextSessionName(generatorExecution.cli, 'gen', projectDir);
       await enqueueDispatchEntry(projectDir, {
         taskId: id,
         action: 'spawn-next',
@@ -399,6 +439,25 @@ async function loadContract(projectDir: string, contractPath: string) {
 
 function resolvePath(projectDir: string, filePath: string): string {
   return path.isAbsolute(filePath) ? filePath : path.join(projectDir, filePath);
+}
+
+function shouldIgnoreGeneratorCallback(status: TaskStatus): boolean {
+  return (
+    status === TaskStatus.GeneratorDone ||
+    status === TaskStatus.Evaluating ||
+    status === TaskStatus.Done ||
+    status === TaskStatus.Escalated ||
+    status === TaskStatus.Cancelled
+  );
+}
+
+function shouldIgnoreEvaluatorCallback(status: TaskStatus): boolean {
+  return (
+    status === TaskStatus.Pending ||
+    status === TaskStatus.Done ||
+    status === TaskStatus.Escalated ||
+    status === TaskStatus.Cancelled
+  );
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────

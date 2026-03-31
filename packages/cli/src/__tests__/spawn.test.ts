@@ -29,8 +29,8 @@ eval_strategy:
       desc: foo is implemented
       method: "unit: check foo"
       threshold: pass
-generator: cc-frontend
-evaluator: eval
+generator: codex-gen-01
+evaluator: claude-eval-01
 max_iterations: 3
 depends_on: []
 `;
@@ -74,9 +74,12 @@ test('runSpawn reads contract and returns generator payload with correct agentId
   const { runSpawn } = await import(`../commands/spawn.ts?t=${Date.now()}`);
   const payload = await runSpawn(taskId, projectDir);
 
-  assert.equal(payload.agentId, 'cc-frontend', 'agentId should match contract.generator');
-  assert.equal(payload.runtime, 'acp', 'unknown agents should default to ACP');
-  assert.equal(payload.runtimeAgentId, 'codex', 'unknown ACP agents should default to codex backend');
+  assert.equal(payload.agentId, 'codex-gen-01', 'agentId should match contract.generator');
+  assert.equal(payload.phase, 'generator');
+  assert.equal(payload.runtime, 'acp');
+  assert.equal(payload.runtimeAgentId, 'codex');
+  assert.deepEqual(payload.constraints.dependsOn, []);
+  assert.deepEqual(payload.constraints.conflictsWith, []);
   assert.equal(payload.taskId, taskId);
   assert.ok(
     payload.promptFile.includes(taskId),
@@ -189,6 +192,40 @@ test('runTrack marks generator sessions as running and evaluator sessions as eva
   assert.equal(queueContents.trim(), '');
 });
 
+test('runTrack ignores stale generator tracking after the task already advanced', async () => {
+  const taskId = 'TEST-TRACK-LATE';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'Late track',
+      status: 'generator_done',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+      iteration: 0,
+    },
+  ], CONTRACT_YAML.replace(/^id: TEST-001$/m, `id: ${taskId}`), taskId);
+
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args.join(' '));
+  };
+
+  try {
+    const { runTrack } = await import(`../commands/track.ts?late=${Date.now()}`);
+    await runTrack(taskId, 'late-session', projectDir, '/tmp/late.log', 'generator');
+  } finally {
+    console.log = originalLog;
+  }
+
+  const taskState = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string; generator_acp_session_key?: string }> };
+  assert.equal(taskState.tasks.find((task) => task.id === taskId)?.status, 'generator_done');
+  assert.equal(taskState.tasks.find((task) => task.id === taskId)?.generator_acp_session_key, undefined);
+  assert.ok(logs.some((line) => line.includes('"ignored":true')));
+});
+
 // ─── C3: complete pass updates task to done and unlocks downstream tasks ───
 
 test('runComplete with pass marks task done and unlocks blocked downstream tasks', async () => {
@@ -198,7 +235,7 @@ test('runComplete with pass marks task done and unlocks blocked downstream tasks
     {
       id: taskId,
       name: 'Test Task',
-      status: 'running',
+      status: 'evaluating',
       contract_path: `docs/nexum/contracts/${taskId}.yaml`,
       depends_on: [],
       iteration: 0,
@@ -253,7 +290,7 @@ test('runComplete with fail and iteration < max_iterations returns retry payload
   const result = await runComplete(taskId, 'fail', projectDir);
 
   assert.equal(result.action, 'retry');
-  assert.equal(result.retryPayload?.agentId, 'cc-frontend', 'retry should use contract.generator');
+  assert.equal(result.retryPayload?.agentId, 'codex-gen-01', 'retry should use contract.generator');
   assert.equal(result.retryPayload?.runtime, 'acp');
   assert.equal(result.retryPayload?.runtimeAgentId, 'codex');
   assert.equal(result.retryPayload?.taskId, taskId);
@@ -271,6 +308,68 @@ test('runComplete with fail and iteration < max_iterations returns retry payload
   delete testingGlobals.__nexumCliSendMessage;
 });
 
+test('runCallback ignores stale evaluator callbacks once the task is back to pending', async () => {
+  const taskId = 'TEST-CALLBACK-STALE';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'Stale evaluator',
+      status: 'pending',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+      iteration: 1,
+    },
+  ], CONTRACT_YAML.replace(/^id: TEST-001$/m, `id: ${taskId}`), taskId);
+
+  const evalDir = path.join(projectDir, 'nexum', 'runtime', 'eval');
+  await mkdir(evalDir, { recursive: true });
+  await writeFile(
+    path.join(projectDir, 'nexum', 'active-tasks.json'),
+    JSON.stringify(
+      {
+        tasks: [
+          {
+            id: taskId,
+            name: 'Stale evaluator',
+            status: 'pending',
+            contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+            depends_on: [],
+            iteration: 1,
+            eval_result_path: path.join(projectDir, 'nexum', 'runtime', 'eval', `${taskId}-iter-0.yaml`),
+          },
+        ],
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+  await writeFile(
+    path.join(evalDir, `${taskId}-iter-0.yaml`),
+    ['task_id: TEST-CALLBACK-STALE', 'verdict: fail', 'feedback: "stale result"', 'criteria_results: []', ''].join('\n'),
+    'utf8'
+  );
+
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args.join(' '));
+  };
+
+  try {
+    const { runCallback } = await import(`../commands/callback.ts?stale=${Date.now()}`);
+    await runCallback(taskId, { project: projectDir, role: 'evaluator' });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const taskState = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string }> };
+  assert.equal(taskState.tasks.find((task) => task.id === taskId)?.status, 'pending');
+  assert.ok(logs.some((line) => line.includes('"ignored":true')));
+});
+
 test('runComplete auto-archives done tasks once the active list exceeds 20 done items', async () => {
   const taskId = 'TEST-021';
   const projectDir = await setupProject(
@@ -279,7 +378,7 @@ test('runComplete auto-archives done tasks once the active list exceeds 20 done 
       return {
         id,
         name: `Task ${id}`,
-        status: id === taskId ? 'running' : 'done',
+        status: id === taskId ? 'evaluating' : 'done',
         batch: 'batch-a',
         contract_path: `docs/nexum/contracts/${taskId}.yaml`,
         depends_on: [],
@@ -318,7 +417,7 @@ test('runComplete resolves auto-routed retry payload to the same logical agent f
   const contract = CONTRACT_YAML
     .replace(/^id: TEST-001$/m, `id: ${taskId}`)
     .replace(/^name: Test Task$/m, 'name: Frontend Portal')
-    .replace(/^generator: cc-frontend$/m, 'generator: auto');
+    .replace(/^generator: codex-gen-01$/m, 'generator: auto');
   const projectDir = await setupProject(
     [
       {
@@ -370,13 +469,13 @@ test('runComplete resolves auto-routed retry payload to the same logical agent f
 test('runSpawnEval resolves evaluator execution target from config', async () => {
   const taskId = 'TEST-001';
   const projectDir = await setupProject([
-    {
-      id: taskId,
-      name: 'Test Task',
-      status: 'running',
-      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
-      depends_on: [],
-      iteration: 0,
+      {
+        id: taskId,
+        name: 'Test Task',
+        status: 'generator_done',
+        contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+        depends_on: [],
+        iteration: 0,
     },
   ]);
 
@@ -387,7 +486,7 @@ test('runSpawnEval resolves evaluator execution target from config', async () =>
     JSON.stringify(
       {
         agents: {
-          eval: {
+          'claude-eval-01': {
             cli: 'codex',
             model: 'gpt-4o',
             execution: {
@@ -409,14 +508,15 @@ test('runSpawnEval resolves evaluator execution target from config', async () =>
   const payload = await runSpawnEval(taskId, projectDir);
 
   assert.equal(payload.agentCli, 'codex', 'agentCli should be codex per config');
-  assert.equal(payload.agentId, 'eval', 'agentId should remain the logical evaluator id');
+  assert.equal(payload.agentId, 'claude-eval-01', 'agentId should remain the logical evaluator id');
+  assert.equal(payload.phase, 'evaluator');
   assert.equal(payload.runtime, 'acp', 'runtime should come from execution config');
   assert.equal(payload.runtimeAgentId, 'codex-evaluator', 'runtime agent should come from execution config');
   const tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
   ) as { tasks: Array<{ id: string; status: string; eval_result_path?: string }> };
   const updatedTask = tasksRaw.tasks.find((t) => t.id === taskId);
-  assert.equal(updatedTask?.status, 'running');
+  assert.equal(updatedTask?.status, 'generator_done');
   assert.equal(
     updatedTask?.eval_result_path,
     path.join(projectDir, 'nexum', 'runtime', 'eval', `${taskId}-iter-0.yaml`)
@@ -429,8 +529,8 @@ test('runEval delegates to evaluator payload generation and preserves claude acp
   const taskId = 'TEST-CLAUDE';
   const contract = CONTRACT_YAML
     .replace(/^id: TEST-001$/m, `id: ${taskId}`)
-    .replace(/^generator: cc-frontend$/m, 'generator: codex-gen-01')
-    .replace(/^evaluator: eval$/m, 'evaluator: claude-eval-01');
+    .replace(/^generator: codex-gen-01$/m, 'generator: codex-gen-01')
+    .replace(/^evaluator: claude-eval-01$/m, 'evaluator: claude-eval-01');
   const projectDir = await setupProject(
     [
       {

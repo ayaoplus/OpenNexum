@@ -8,6 +8,7 @@ import {
   getActiveBatch,
   getBatchProgress,
   getUnlockedTasks,
+  syncTasksWithContracts,
   updateTask,
   writeBatch
 } from "../tasks";
@@ -210,4 +211,82 @@ test("writeBatch persists currentBatch and getBatchProgress counts done tasks pe
   const parsed = JSON.parse(rawContents) as ActiveTasksFile;
   assert.equal(parsed.currentBatch, "alpha");
   assert.equal(parsed.tasks.length, 3);
+});
+
+test("syncTasksWithContracts registers contracts and derives blocked status from depends_on", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-tasks-"));
+  const contractDir = path.join(projectDir, "docs", "nexum", "contracts");
+  const nexumDir = path.join(projectDir, "nexum");
+  const activeTasksPath = path.join(nexumDir, "active-tasks.json");
+
+  await mkdir(contractDir, { recursive: true });
+  await mkdir(nexumDir, { recursive: true });
+  await writeFile(activeTasksPath, JSON.stringify({ tasks: [] }, null, 2) + "\n", "utf8");
+  await writeFile(
+    path.join(contractDir, "TASK-001.yaml"),
+    [
+      "id: TASK-001",
+      'name: "First task"',
+      "type: coding",
+      "scope:",
+      "  files:",
+      "    - src/one.ts",
+      "  boundaries: []",
+      "  conflicts_with: []",
+      "deliverables:",
+      '  - "src/one.ts"',
+      "eval_strategy:",
+      "  type: review",
+      "  criteria:",
+      "    - id: C1",
+      '      desc: "ok"',
+      "generator: codex-gen-01",
+      "evaluator: claude-eval-01",
+      "max_iterations: 3",
+      "depends_on: []",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    path.join(contractDir, "TASK-002.yaml"),
+    [
+      "id: TASK-002",
+      'name: "Second task"',
+      "type: coding",
+      "scope:",
+      "  files:",
+      "    - src/two.ts",
+      "  boundaries: []",
+      "  conflicts_with: []",
+      "deliverables:",
+      '  - "src/two.ts"',
+      "eval_strategy:",
+      "  type: review",
+      "  criteria:",
+      "    - id: C1",
+      '      desc: "ok"',
+      "generator: codex-gen-01",
+      "evaluator: claude-eval-01",
+      "max_iterations: 3",
+      "depends_on:",
+      "  - TASK-001",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+
+  const result = await syncTasksWithContracts(projectDir);
+
+  assert.deepEqual(result.created.sort(), ["TASK-001", "TASK-002"]);
+  const parsed = JSON.parse(await readFile(activeTasksPath, "utf8")) as ActiveTasksFile;
+  assert.equal(parsed.tasks.find((task) => task.id === "TASK-001")?.status, TaskStatus.Pending);
+  assert.equal(parsed.tasks.find((task) => task.id === "TASK-002")?.status, TaskStatus.Blocked);
+
+  await updateTask(projectDir, "TASK-001", { status: TaskStatus.Done });
+  const resynced = await syncTasksWithContracts(projectDir, { taskId: "TASK-002" });
+  assert.deepEqual(resynced.updated, ["TASK-002"]);
+
+  const afterResync = JSON.parse(await readFile(activeTasksPath, "utf8")) as ActiveTasksFile;
+  assert.equal(afterResync.tasks.find((task) => task.id === "TASK-002")?.status, TaskStatus.Pending);
 });

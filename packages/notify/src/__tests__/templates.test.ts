@@ -12,7 +12,7 @@ import {
 test("formatDispatch includes task details and optional batch progress", () => {
   const result = formatDispatch({
     taskId: "NX-004",
-    taskName: "Telegram Notify",
+    taskName: "Message Notify",
     agent: "codex-gen-01 (NX-004)",
     model: "gpt-5.4",
     scopeCount: 7,
@@ -22,7 +22,7 @@ test("formatDispatch includes task details and optional batch progress", () => {
   });
 
   assert.ok(result.includes("NX-004"));
-  assert.ok(result.includes("Telegram Notify"));
+  assert.ok(result.includes("Message Notify"));
   assert.ok(result.includes("codex-gen-01"));
   assert.ok(result.includes("gpt-5.4"));
   assert.ok(result.includes("7"));
@@ -34,7 +34,7 @@ test("formatDispatch includes task details and optional batch progress", () => {
 test("formatGeneratorDone includes commit and elapsed fields", () => {
   const result = formatGeneratorDone({
     taskId: "NX-004",
-    taskName: "Telegram Notify",
+    taskName: "Message Notify",
     agent: "codex-gen-01",
     model: "gpt-5.4",
     inputTokens: 1200,
@@ -56,7 +56,7 @@ test("formatGeneratorDone includes commit and elapsed fields", () => {
 test("formatReviewPassed includes unlocked tasks and progress", () => {
   const result = formatReviewPassed({
     taskId: "NX-004",
-    taskName: "Telegram Notify",
+    taskName: "Message Notify",
     evaluator: "claude-eval-01",
     model: "sonnet-4-6",
     elapsedMs: 12_500,
@@ -68,7 +68,7 @@ test("formatReviewPassed includes unlocked tasks and progress", () => {
     batchProgress: "batch-a: 2/4",
   });
 
-  assert.ok(result.includes("Telegram Notify"));
+  assert.ok(result.includes("Message Notify"));
   assert.ok(result.includes("claude-eval-01"));
   assert.ok(result.includes("5/5"));
   assert.ok(result.includes("NX-005"));
@@ -81,7 +81,7 @@ test("formatReviewPassed includes unlocked tasks and progress", () => {
 test("formatReviewFailed expands failed criteria and retry hint", () => {
   const result = formatReviewFailed({
     taskId: "NX-004",
-    taskName: "Telegram Notify",
+    taskName: "Message Notify",
     evaluator: "claude-eval-01",
     model: "sonnet-4-6",
     iteration: 2,

@@ -4,6 +4,7 @@ import {
   getActiveBatch,
   getBatchProgress,
   readTasks,
+  syncTasksWithContracts,
   TaskStatus,
   type Task,
   NexumError,
@@ -41,6 +42,7 @@ export async function runStatus(
   projectDir: string,
   options: { json?: boolean; batch?: string } = {}
 ): Promise<void> {
+  await syncTasksWithContracts(projectDir);
   const tasks = await readTasks(projectDir);
   const currentBatch = options.batch ?? await getActiveBatch(projectDir);
   const visibleTasks =

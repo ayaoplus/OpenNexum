@@ -38,7 +38,7 @@ nexum callback INFRA-001 --project /path/to/project \\
 注意事项：
 - token 数量从本次对话的实际消耗中读取，无法确认时填 0
 - 模型名填当前使用的模型（如 claude-sonnet-4-6、gpt-5.4 等）
-- 此步骤会触发评估流程和 Telegram 通知，不可跳过
+- 此步骤会触发评估流程和编排通知，不可跳过
 ${CALLBACK_BLOCK_END}
 `;
 
@@ -241,28 +241,19 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
   // Interactive wizard (or defaults)
   const answers = await runWizard(projectDir, useDefaults);
 
-  // Build agents config: only write detected CLIs; fallback to both if none found
-  const agents: Record<string, InitAgentConfig> = {};
-  if (cliAvail.codex) {
-    Object.assign(agents, {
-      "codex-gen-01": buildInitAgent("codex", "gpt-5.4", "high"),
-      "codex-gen-02": buildInitAgent("codex", "gpt-5.4", "high"),
-      "codex-gen-03": buildInitAgent("codex", "gpt-5.4", "high"),
-      "codex-frontend-01": buildInitAgent("codex", "gpt-5.4", "medium"),
-      "codex-eval-01": buildInitAgent("codex", "gpt-5.4", "high"),
-      "codex-e2e-01": buildInitAgent("codex", "gpt-5.4", "medium"),
-    });
-  }
-  if (cliAvail.claude) {
-    Object.assign(agents, {
-      "claude-gen-01": buildInitAgent("claude", "sonnet-4-6"),
-      "claude-gen-02": buildInitAgent("claude", "sonnet-4-6"),
-      "claude-eval-01": buildInitAgent("claude", "sonnet-4-6"),
-      "claude-plan-01": buildInitAgent("claude", "opus-4-6"),
-      "claude-write-01": buildInitAgent("claude", "sonnet-4-6"),
-    });
-  }
-  // If neither CLI is available, leave agents empty (warn already printed above)
+  const agents: Record<string, InitAgentConfig> = {
+    "codex-gen-01": buildInitAgent("codex", "gpt-5.4", "high"),
+    "codex-gen-02": buildInitAgent("codex", "gpt-5.4", "high"),
+    "codex-gen-03": buildInitAgent("codex", "gpt-5.4", "high"),
+    "codex-frontend-01": buildInitAgent("codex", "gpt-5.4", "medium"),
+    "codex-eval-01": buildInitAgent("codex", "gpt-5.4", "high"),
+    "codex-e2e-01": buildInitAgent("codex", "gpt-5.4", "medium"),
+    "claude-gen-01": buildInitAgent("claude", "sonnet-4-6"),
+    "claude-gen-02": buildInitAgent("claude", "sonnet-4-6"),
+    "claude-eval-01": buildInitAgent("claude", "sonnet-4-6"),
+    "claude-plan-01": buildInitAgent("claude", "opus-4-6"),
+    "claude-write-01": buildInitAgent("claude", "sonnet-4-6"),
+  };
 
   // Build full config
   const config: Record<string, unknown> = {
@@ -285,6 +276,9 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
             timeoutMin: answers.watchTimeoutMin,
           }
         : {}),
+    },
+    webhook: {
+      agentId: "orchestrator",
     },
     agents,
   };

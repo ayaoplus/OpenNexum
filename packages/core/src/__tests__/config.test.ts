@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { NexumError } from "../errors";
 import { loadConfig, resolveAgentCli, resolveAgentExecution } from "../config";
 
 test("loadConfig returns empty object when config.json does not exist", async () => {
@@ -44,14 +45,17 @@ test("resolveAgentCli returns cli from config when agent exists", () => {
   assert.equal(resolveAgentCli(config, "my-agent"), "claude");
 });
 
-test("resolveAgentCli defaults to codex when agent not in config", () => {
+test("resolveAgentCli infers codex from the logical agent prefix when config is missing", () => {
   const config = {};
-  assert.equal(resolveAgentCli(config, "unknown-agent"), "codex");
+  assert.equal(resolveAgentCli(config, "codex-gen-01"), "codex");
 });
 
-test("resolveAgentCli defaults to codex when agents map is empty", () => {
+test("resolveAgentCli throws for unknown non-standard logical agents", () => {
   const config = { agents: {} };
-  assert.equal(resolveAgentCli(config, "any-agent"), "codex");
+  assert.throws(() => resolveAgentCli(config, "any-agent"), {
+    name: NexumError.name,
+    code: "CONFIG_INVALID",
+  });
 });
 
 test("resolveAgentExecution defaults codex agents to ACP codex backend", () => {

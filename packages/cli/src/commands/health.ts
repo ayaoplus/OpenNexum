@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Command } from 'commander';
-import { readTasks, TaskStatus, loadConfig } from '@nexum/core';
+import { readTasks, syncTasksWithContracts, TaskStatus, loadConfig } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
 import { sendMessage, formatHealthAlert } from '@nexum/notify';
 import {
@@ -45,6 +45,7 @@ export async function runHealth(
   opts: { timeoutMin?: number; notify?: boolean; json?: boolean } = {}
 ): Promise<HealthResult> {
   const timeoutMin = opts.timeoutMin ?? DEFAULT_TIMEOUT_MIN;
+  await syncTasksWithContracts(projectDir);
   const tasks = await readTasks(projectDir);
 
   const activeTasks = tasks.filter(
@@ -199,7 +200,7 @@ function ts(): string {
 export function registerHealth(program: Command): void {
   program
     .command('health')
-    .description('Check for stuck/hung tasks and alert via Telegram')
+    .description('Check for stuck/hung tasks and alert via OpenClaw messaging')
     .option('--project <dir>', 'Project directory', process.cwd())
     .option('--timeout <min>', 'Minutes before stuck', String(DEFAULT_TIMEOUT_MIN))
     .option('--no-notify', 'Skip notification')

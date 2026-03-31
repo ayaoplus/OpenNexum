@@ -1,12 +1,21 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { parseContract } from "./contract";
 import { TaskStatus, type ActiveTasksFile, type Task } from "./types";
 
 const ACTIVE_TASKS_PATH = path.join("nexum", "active-tasks.json");
+const CONTRACTS_DIR_PATH = path.join("docs", "nexum", "contracts");
 const LOCK_RETRY_MS = 20;
 const LOCK_TIMEOUT_MS = 2_000;
 const STALE_LOCK_MS = 30_000;
+
+export interface TaskSyncResult {
+  created: string[];
+  updated: string[];
+  skipped: string[];
+  totalContracts: number;
+}
 
 export async function readTasks(projectDir: string): Promise<Task[]> {
   const activeTasks = await readActiveTasksFile(projectDir);
@@ -43,6 +52,90 @@ export async function writeBatch(projectDir: string, batch?: string): Promise<vo
   await withTasksLock(projectDir, async () => {
     const activeTasks = await readActiveTasksFile(projectDir);
     await writeActiveTasksFile(projectDir, { ...activeTasks, currentBatch: batch });
+  });
+}
+
+export async function syncTasksWithContracts(
+  projectDir: string,
+  options: { taskId?: string } = {}
+): Promise<TaskSyncResult> {
+  const contractFiles = await findContractFiles(projectDir);
+  const created: string[] = [];
+  const updated: string[] = [];
+  const skipped: string[] = [];
+  const normalizedTaskId = options.taskId?.trim();
+
+  return withTasksLock(projectDir, async () => {
+    const activeTasks = await readActiveTasksFile(projectDir);
+    const existingById = new Map(activeTasks.tasks.map((task) => [task.id, task]));
+    const parsedContracts = await Promise.all(
+      contractFiles.map(async (contractPath) => {
+        const contract = await parseContract(contractPath);
+        return { contract, contractPath };
+      })
+    );
+
+    const selectedContracts = normalizedTaskId
+      ? parsedContracts.filter(({ contract }) => contract.id === normalizedTaskId)
+      : parsedContracts;
+
+    const completedIds = new Set(
+      activeTasks.tasks
+        .filter((task) => task.status === TaskStatus.Done)
+        .map((task) => task.id)
+    );
+    const nextTasks = activeTasks.tasks.slice();
+
+    for (const { contract, contractPath } of selectedContracts) {
+      const normalizedContractPath = path.relative(projectDir, contractPath);
+      const existing = existingById.get(contract.id);
+      const nextStatus = normalizeSchedulableStatus(
+        existing?.status,
+        contract.depends_on,
+        completedIds
+      );
+      const syncedTask: Task = {
+        ...(existing ?? {}),
+        id: contract.id,
+        name: contract.name,
+        batch: contract.batch ?? existing?.batch,
+        status: nextStatus,
+        contract_path: normalizedContractPath,
+        depends_on: contract.depends_on
+      };
+
+      if (!existing) {
+        nextTasks.push(syncedTask);
+        existingById.set(contract.id, syncedTask);
+        created.push(contract.id);
+        continue;
+      }
+
+      const index = nextTasks.findIndex((task) => task.id === contract.id);
+      if (index < 0) {
+        nextTasks.push(syncedTask);
+        updated.push(contract.id);
+        continue;
+      }
+
+      if (hasTaskMetadataChanged(existing, syncedTask)) {
+        nextTasks[index] = syncedTask;
+        updated.push(contract.id);
+      } else {
+        skipped.push(contract.id);
+      }
+    }
+
+    if (created.length > 0 || updated.length > 0) {
+      await writeActiveTasksFile(projectDir, { ...activeTasks, tasks: nextTasks });
+    }
+
+    return {
+      created,
+      updated,
+      skipped,
+      totalContracts: selectedContracts.length
+    };
   });
 }
 
@@ -223,6 +316,79 @@ function normalizeTask(task: Task, filePath: string): Task {
   }
 
   return task;
+}
+
+function hasTaskMetadataChanged(current: Task, next: Task): boolean {
+  return (
+    current.name !== next.name ||
+    current.batch !== next.batch ||
+    current.status !== next.status ||
+    current.contract_path !== next.contract_path ||
+    !sameStringArray(current.depends_on, next.depends_on)
+  );
+}
+
+function normalizeSchedulableStatus(
+  currentStatus: TaskStatus | undefined,
+  dependsOn: string[],
+  completedIds: Set<string>
+): TaskStatus {
+  if (
+    currentStatus &&
+    currentStatus !== TaskStatus.Pending &&
+    currentStatus !== TaskStatus.Blocked
+  ) {
+    return currentStatus;
+  }
+
+  return dependsOn.every((dependencyId) => completedIds.has(dependencyId))
+    ? TaskStatus.Pending
+    : TaskStatus.Blocked;
+}
+
+async function findContractFiles(projectDir: string): Promise<string[]> {
+  const contractsDir = path.join(projectDir, CONTRACTS_DIR_PATH);
+  const discovered: string[] = [];
+
+  await walkContractDir(contractsDir, discovered);
+
+  return discovered.sort();
+}
+
+async function walkContractDir(dirPath: string, discovered: string[]): Promise<void> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+
+      const entryPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        await walkContractDir(entryPath, discovered);
+        continue;
+      }
+
+      if (entry.isFile() && /\.(yaml|yml)$/i.test(entry.name)) {
+        discovered.push(entryPath);
+      }
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((entry, index) => entry === right[index]);
 }
 
 function serializeActiveTasks(activeTasks: ActiveTasksFile): ActiveTasksFile {

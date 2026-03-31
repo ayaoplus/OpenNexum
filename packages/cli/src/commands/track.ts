@@ -3,6 +3,7 @@ import {
   getTask,
   updateTask,
   readTasks,
+  syncTasksWithContracts,
   TaskStatus,
   parseContract,
   getHeadCommit,
@@ -18,7 +19,7 @@ type TrackRole = 'generator' | 'evaluator';
 /**
  * track: called by the orchestrator (AI agent) after a runtime session is started.
  * Writes the sessionKey (and optional streamLogPath) to active-tasks.json
- * and sends a Telegram dispatch notification.
+ * and sends a dispatch notification.
  */
 export async function runTrack(
   taskId: string,
@@ -27,12 +28,37 @@ export async function runTrack(
   streamLogPath?: string,
   role?: TrackRole
 ): Promise<void> {
+  await syncTasksWithContracts(projectDir, { taskId });
   const task = await getTask(projectDir, taskId);
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
   }
 
   const trackedRole = role ?? inferTrackRole(task.status);
+  const trackingDecision = decideTrackTransition(task, trackedRole, sessionKey);
+  if (trackingDecision.action === 'ignore') {
+    console.log(
+      JSON.stringify({ ok: true, taskId, sessionKey, ignored: true, reason: trackingDecision.reason })
+    );
+    return;
+  }
+
+  if (trackingDecision.action === 'noop') {
+    await acknowledgeDispatchEntries(projectDir, (entry) => {
+      if (entry.taskId !== taskId) {
+        return false;
+      }
+
+      if (trackedRole === 'evaluator') {
+        return entry.action === 'spawn-evaluator';
+      }
+
+      return entry.action === 'spawn-retry' || entry.action === 'spawn-next';
+    });
+    console.log(JSON.stringify({ ok: true, taskId, sessionKey, ignored: true, reason: trackingDecision.reason }));
+    return;
+  }
+
   const now = new Date().toISOString();
   const baseCommit =
     trackedRole === 'generator' && !task.base_commit
@@ -131,4 +157,53 @@ function inferTrackRole(status: TaskStatus): TrackRole {
   return status === TaskStatus.GeneratorDone || status === TaskStatus.Evaluating
     ? 'evaluator'
     : 'generator';
+}
+
+function decideTrackTransition(
+  task: NonNullable<Awaited<ReturnType<typeof getTask>>>,
+  role: TrackRole,
+  sessionKey: string
+): { action: 'apply' | 'noop' | 'ignore'; reason?: string } {
+  if (role === 'generator') {
+    if (task.status === TaskStatus.Pending) {
+      return { action: 'apply' };
+    }
+
+    if (task.status === TaskStatus.Running) {
+      return task.generator_acp_session_key === sessionKey || task.acp_session_key === sessionKey
+        ? { action: 'noop', reason: 'generator session already tracked' }
+        : { action: 'ignore', reason: `generator already tracked with ${task.generator_acp_session_key ?? task.acp_session_key}` };
+    }
+
+    if (
+      task.status === TaskStatus.GeneratorDone ||
+      task.status === TaskStatus.Evaluating ||
+      task.status === TaskStatus.Done ||
+      task.status === TaskStatus.Escalated
+    ) {
+      return { action: 'ignore', reason: `task already advanced to ${task.status}` };
+    }
+
+    throw new Error(`Task ${task.id} cannot track generator session from status ${task.status}.`);
+  }
+
+  if (task.status === TaskStatus.GeneratorDone) {
+    return { action: 'apply' };
+  }
+
+  if (task.status === TaskStatus.Evaluating) {
+    return task.evaluator_acp_session_key === sessionKey || task.acp_session_key === sessionKey
+      ? { action: 'noop', reason: 'evaluator session already tracked' }
+      : { action: 'ignore', reason: `evaluator already tracked with ${task.evaluator_acp_session_key ?? task.acp_session_key}` };
+  }
+
+  if (
+    task.status === TaskStatus.Pending ||
+    task.status === TaskStatus.Done ||
+    task.status === TaskStatus.Escalated
+  ) {
+    return { action: 'ignore', reason: `task is not awaiting evaluator tracking (${task.status})` };
+  }
+
+  throw new Error(`Task ${task.id} cannot track evaluator session from status ${task.status}.`);
 }

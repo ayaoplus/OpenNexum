@@ -81,8 +81,8 @@ export async function postWebhookMessage(options: {
       },
       body: JSON.stringify({
         message: options.message,
-        name: "Nexum",
-        agentId: "main",
+        name: "OpenNexum",
+        agentId: config.webhook?.agentId?.trim() || "orchestrator",
         deliver: false,
         ...(options.sessionName ? { sessionName: options.sessionName } : {})
       })

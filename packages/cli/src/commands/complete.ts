@@ -6,6 +6,7 @@ import {
   parseEvalResult,
   getTask,
   readTasks,
+  syncTasksWithContracts,
   updateTask,
   TaskStatus,
   loadConfig,
@@ -37,17 +38,20 @@ export interface CompleteResult {
   taskId: string;
   unlockedTasks?: string[];
   retryPayload?: RetryPayload;
-}
-
-interface EscalationHistoryEntry {
-  iteration: number;
-  feedback: string;
-  criteriaResults: CriterionResult[];
+  noop?: boolean;
 }
 
 const ESCALATED_TASK_STATUS = TaskStatus.Escalated;
 const ESCALATED_REASON_PREFIX = 'Escalated:';
 const FEEDBACK_SIMILARITY_THRESHOLD = 0.8;
+
+function quoteShellArg(value: string): string {
+  if (value === '') {
+    return "''";
+  }
+
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 function tokenizeFeedback(text: string): string[] {
   return (text.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]+/g) ?? []).filter(Boolean);
@@ -73,30 +77,6 @@ function calculateFeedbackSimilarity(left: string, right: string): number {
 
 function buildEvalResultPath(projectDir: string, taskId: string, iteration: number): string {
   return path.join(projectDir, 'nexum', 'runtime', 'eval', `${taskId}-iter-${iteration}.yaml`);
-}
-
-async function readEscalationHistory(
-  projectDir: string,
-  taskId: string,
-  latestIteration: number
-): Promise<EscalationHistoryEntry[]> {
-  const history: EscalationHistoryEntry[] = [];
-
-  for (let iteration = 0; iteration <= latestIteration; iteration += 1) {
-    const summary = await parseEvalResult(buildEvalResultPath(projectDir, taskId, iteration));
-
-    if (!summary.feedback && summary.criteriaResults.length === 0) {
-      continue;
-    }
-
-    history.push({
-      iteration,
-      feedback: summary.feedback,
-      criteriaResults: summary.criteriaResults,
-    });
-  }
-
-  return history;
 }
 
 function isEscalatedTask(task: Awaited<ReturnType<typeof getTask>>): boolean {
@@ -140,9 +120,27 @@ export async function runComplete(
     throw new Error(`Invalid verdict: ${verdict}. Must be pass, fail, or escalated.`);
   }
 
+  await syncTasksWithContracts(projectDir, { taskId });
   const task = await getTask(projectDir, taskId);
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
+  }
+
+  if (task.status === TaskStatus.Done && normalizedVerdict === 'pass') {
+    return { action: 'done', taskId, unlockedTasks: [], noop: true };
+  }
+
+  if (
+    task.status === TaskStatus.Escalated &&
+    (normalizedVerdict === 'fail' || normalizedVerdict === 'escalated')
+  ) {
+    return { action: 'escalated', taskId, noop: true };
+  }
+
+  if (task.status !== TaskStatus.GeneratorDone && task.status !== TaskStatus.Evaluating) {
+    throw new Error(
+      `Task ${taskId} cannot complete from status ${task.status}. Expected generator_done or evaluating.`
+    );
   }
 
   const contractAbsPath = path.isAbsolute(task.contract_path)
@@ -208,8 +206,9 @@ export async function runComplete(
       `${taskId}-iter-${nextIteration}.yaml`
     );
 
+    const quotedScopeFiles = contract.scope.files.map((file) => quoteShellArg(file)).join(' ');
     const gitCommitCmd = [
-      `git add -- ${contract.scope.files.join(' ')}`,
+      `git add -- ${quotedScopeFiles}`,
       `git commit -m "feat(${taskId.toLowerCase()}): implement ${contract.name} (iter ${nextIteration})"`,
     ].join(' && ');
 
@@ -276,8 +275,6 @@ export async function runComplete(
       : shouldEscalateBySimilarity
         ? `consecutive evaluator feedback similarity ${similarityPercent}% (> 80%), possible Contract criteria issue`
         : `max_iterations reached (${iteration}/${contract.max_iterations})`;
-  const escalationHistory = await readEscalationHistory(projectDir, taskId, iteration);
-
   await updateTask(projectDir, taskId, {
     status: ESCALATED_TASK_STATUS,
     last_error: `${ESCALATED_REASON_PREFIX} ${escalationReason}`,

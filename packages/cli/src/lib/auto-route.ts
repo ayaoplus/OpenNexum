@@ -1,4 +1,4 @@
-import type { Contract, NexumConfig, RoutingRule } from '@nexum/core';
+import type { AgentCli, Contract, NexumConfig, RoutingRule } from '@nexum/core';
 
 function findMatchingRule(
   contract: Pick<Contract, 'name'>,
@@ -21,7 +21,7 @@ export function autoSelectGenerator(
   }
 
   if (contract.type === 'creative') {
-    return 'claude-write-01';
+    return resolvePreferredAgent(config, 'claude', ['claude-write-01'], ['-write-', '-gen-']);
   }
 
   const contractName = contract.name.toLowerCase();
@@ -32,7 +32,7 @@ export function autoSelectGenerator(
     contract.name.includes('用户端') ||
     contractName.includes('portal')
   ) {
-    return 'claude-gen-01';
+    return resolvePreferredAgent(config, 'claude', ['claude-gen-01', 'claude-gen-02'], ['-gen-']);
   }
 
   if (
@@ -40,7 +40,7 @@ export function autoSelectGenerator(
     contractName.includes('dashboard') ||
     contract.name.includes('管理')
   ) {
-    return 'codex-frontend-01';
+    return resolvePreferredAgent(config, 'codex', ['codex-frontend-01', 'codex-gen-01'], ['-frontend-', '-gen-']);
   }
 
   if (
@@ -48,26 +48,26 @@ export function autoSelectGenerator(
     contractName.includes('test') ||
     contract.name.includes('测试')
   ) {
-    return 'codex-e2e-01';
+    return resolvePreferredAgent(config, 'codex', ['codex-e2e-01', 'codex-gen-01'], ['-e2e-', '-gen-']);
   }
 
-  return 'codex-gen-01';
+  return resolvePreferredAgent(config, 'codex', ['codex-gen-01', 'codex-gen-02', 'codex-gen-03'], ['-gen-']);
 }
 
 export function autoSelectEvaluator(
   generatorId: string,
   _contract: Pick<Contract, 'name' | 'type'>,
-  _config: NexumConfig,
+  config: NexumConfig,
 ): string {
   if (generatorId.startsWith('codex-')) {
-    return 'claude-eval-01';
+    return resolvePreferredAgent(config, 'claude', ['claude-eval-01'], ['-eval-']);
   }
 
   if (generatorId.startsWith('claude-')) {
-    return 'codex-eval-01';
+    return resolvePreferredAgent(config, 'codex', ['codex-eval-01'], ['-eval-']);
   }
 
-  return 'codex-eval-01';
+  return resolvePreferredAgent(config, 'codex', ['codex-eval-01'], ['-eval-']);
 }
 
 export function resolveAgents(
@@ -86,4 +86,37 @@ export function resolveAgents(
     : rawEvaluator;
 
   return { generator, evaluator };
+}
+
+function resolvePreferredAgent(
+  config: NexumConfig,
+  cli: AgentCli,
+  preferredIds: string[],
+  roleHints: string[]
+): string {
+  const availableAgents = Object.entries(config.agents ?? {})
+    .filter(([, agent]) => agent.cli === cli)
+    .map(([agentId]) => agentId)
+    .sort();
+
+  for (const preferredId of preferredIds) {
+    if (availableAgents.includes(preferredId)) {
+      return preferredId;
+    }
+  }
+
+  const hintedAgent = availableAgents.find((agentId) =>
+    roleHints.some((hint) => agentId.includes(hint))
+  );
+  if (hintedAgent) {
+    return hintedAgent;
+  }
+
+  for (const preferredId of preferredIds) {
+    if (preferredId.startsWith(`${cli}-`)) {
+      return preferredId;
+    }
+  }
+
+  throw new Error(`No ${cli} agent configured for auto routing.`);
 }

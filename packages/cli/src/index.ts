@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { registerInit } from './commands/init.js';
 import { registerCallback } from './commands/callback.js';
 import { registerSpawn } from './commands/spawn.js';
+import { registerSync } from './commands/sync.js';
 import { registerTrack } from './commands/track.js';
 import { registerStatus } from './commands/status.js';
 import { registerEval } from './commands/eval.js';
@@ -17,6 +18,7 @@ program
   .version('0.0.0');
 
 registerInit(program);
+registerSync(program);
 registerCallback(program);
 registerSpawn(program);
 registerTrack(program);

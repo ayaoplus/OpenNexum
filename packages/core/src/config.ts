@@ -1,8 +1,15 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { ErrorCode, NexumError } from "./errors";
+
 export type AgentCli = "codex" | "claude";
 export type AgentRuntime = "acp";
+
+export interface ProjectConfig {
+  name?: string;
+  stack?: string;
+}
 
 export interface AgentExecutionConfig {
   runtime?: AgentRuntime;
@@ -50,9 +57,11 @@ export interface HealthConfig {
 export interface WebhookConfig {
   gatewayUrl?: string;
   token?: string;
+  agentId?: string;
 }
 
 export interface NexumConfig {
+  project?: ProjectConfig;
   notify?: NotifyConfig;
   agents?: Record<string, AgentConfig>;
   git?: GitConfig;
@@ -83,7 +92,23 @@ export async function loadConfig(projectDir: string): Promise<NexumConfig> {
 }
 
 export function resolveAgentCli(config: NexumConfig, agentId: string): AgentCli {
-  return config.agents?.[agentId]?.cli ?? "codex";
+  const configuredCli = config.agents?.[agentId]?.cli;
+  if (configuredCli) {
+    return configuredCli;
+  }
+
+  if (agentId.startsWith("codex-")) {
+    return "codex";
+  }
+
+  if (agentId.startsWith("claude-")) {
+    return "claude";
+  }
+
+  throw new NexumError(
+    `Agent "${agentId}" is not configured. Add it to nexum/config.json or use a standard codex-/claude- logical agent ID.`,
+    ErrorCode.CONFIG_INVALID
+  );
 }
 
 export function resolveAgentExecution(
