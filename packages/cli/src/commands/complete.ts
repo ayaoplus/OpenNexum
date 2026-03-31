@@ -212,12 +212,21 @@ export async function runComplete(
       `git commit -m "feat(${taskId.toLowerCase()}): implement ${contract.name} (iter ${nextIteration})"`,
     ].join(' && ');
 
+    const fieldReportPath = path.join(
+      projectDir,
+      'nexum',
+      'runtime',
+      'field-reports',
+      `${taskId}.md`
+    );
+
     const promptContent = renderRetryPrompt(
       {
         contract: resolvedContract,
         task: { id: task.id, name: task.name },
         gitCommitCmd,
         evalResultPath: nextEvalResultPath,
+        fieldReportPath,
         lessons: [],
       },
       verdict,

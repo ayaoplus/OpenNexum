@@ -291,6 +291,7 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
   const configPath = path.join(nexumDir, "config.json");
   const contractsDir = path.join(projectDir, "docs", "nexum", "contracts");
   const evalDir = path.join(nexumDir, "runtime", "eval");
+  const fieldReportsDir = path.join(nexumDir, "runtime", "field-reports");
 
   const created: string[] = [];
 
@@ -308,6 +309,10 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
 
   if (await ensureGitkeep(evalDir)) {
     created.push(path.join(evalDir, ".gitkeep"));
+  }
+
+  if (await ensureGitkeep(fieldReportsDir)) {
+    created.push(path.join(fieldReportsDir, ".gitkeep"));
   }
 
   const { result: callbackResult, targetFile: callbackTarget } =

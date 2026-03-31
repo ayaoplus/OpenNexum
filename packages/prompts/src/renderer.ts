@@ -73,6 +73,7 @@ function generatorVars(context: PromptContext): Record<string, string> {
     CRITERIA_PREVIEW: formatCriteria(context.contract.eval_strategy.criteria),
     GIT_COMMIT_CMD: context.gitCommitCmd,
     EVAL_RESULT_PATH: context.evalResultPath,
+    FIELD_REPORT_PATH: context.fieldReportPath,
     RELEVANT_LESSONS: formatLessons(context.lessons),
   };
 }
@@ -87,8 +88,12 @@ export function renderGeneratorPrompt(context: PromptContext): string {
 export function renderEvaluatorPrompt(context: PromptContext): string {
   const template = loadTemplate('evaluator.md');
   return applyVariables(template, {
+    TASK_NAME: context.task.name,
+    SCOPE_FILES: formatList(context.contract.scope.files),
+    DELIVERABLES: formatDeliverables(context.contract.deliverables),
     CRITERIA_PREVIEW: formatCriteria(context.contract.eval_strategy.criteria),
     EVAL_RESULT_PATH: context.evalResultPath,
+    FIELD_REPORT_PATH: context.fieldReportPath,
     TASK_ID: context.contract.id,
     PROJECT_DIR: context.projectDir ?? '',
   });

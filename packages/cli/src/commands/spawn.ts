@@ -106,6 +106,13 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     'eval',
     `${taskId}-iter-${iteration}.yaml`
   );
+  const fieldReportPath = path.join(
+    projectDir,
+    'nexum',
+    'runtime',
+    'field-reports',
+    `${taskId}.md`
+  );
 
   const config = await loadConfig(projectDir);
   const resolvedContract = resolveContractAgents(contract, config);
@@ -137,6 +144,7 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
     task: { id: task.id, name: task.name },
     gitCommitCmd,
     evalResultPath,
+    fieldReportPath,
     lessons: [],
     projectDir,
   });
@@ -202,6 +210,13 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     'eval',
     `${taskId}-iter-${iteration}.yaml`
   );
+  const fieldReportPath = path.join(
+    projectDir,
+    'nexum',
+    'runtime',
+    'field-reports',
+    `${taskId}.md`
+  );
 
   const { renderEvaluatorPrompt } = await import('@nexum/prompts');
   const promptContent = renderEvaluatorPrompt({
@@ -209,6 +224,7 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     task: { id: task.id, name: task.name },
     gitCommitCmd: '',
     evalResultPath,
+    fieldReportPath,
     lessons: [],
   });
 

@@ -45,6 +45,7 @@ export interface PromptContext {
   task: Task;
   gitCommitCmd: string;
   evalResultPath: string;
+  fieldReportPath: string;
   lessons: string[];
   projectDir?: string;
 }
