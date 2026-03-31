@@ -12,6 +12,7 @@ import {
 import { installDaemon, uninstallDaemon, getDaemonStatus } from '../lib/daemon.js';
 import { processDispatchQueue } from '../lib/dispatch-queue.js';
 import { postWebhookMessage } from '../lib/webhook.js';
+import { getDisplaySession } from '../lib/task-session.js';
 
 const DEFAULT_TIMEOUT_MIN = 30;
 
@@ -57,9 +58,10 @@ export async function runHealth(
     if (age < timeoutMin) continue;
 
     let sessionAlive: boolean | null = null;
-    if (task.acp_session_key) {
+    const activeSession = getDisplaySession(task);
+    if (activeSession.sessionKey) {
       try {
-        const s = await getSessionStatus(task.acp_session_key);
+        const s = await getSessionStatus(activeSession.sessionKey);
         sessionAlive = s === 'running';
       } catch {
         sessionAlive = null;

@@ -239,6 +239,10 @@ export async function runComplete(
       started_at: undefined,
       acp_session_key: undefined,
       acp_stream_log: undefined,
+      generator_acp_session_key: undefined,
+      generator_acp_stream_log: undefined,
+      evaluator_acp_session_key: undefined,
+      evaluator_acp_stream_log: undefined,
     });
 
     const execution = resolveAgentExecution(config, resolvedContract.generator);
@@ -314,6 +318,10 @@ export async function runRetry(
     completed_at: undefined,
     acp_session_key: undefined,
     acp_stream_log: undefined,
+    generator_acp_session_key: undefined,
+    generator_acp_stream_log: undefined,
+    evaluator_acp_session_key: undefined,
+    evaluator_acp_stream_log: undefined,
   });
 
   return { ok: true, taskId, status: TaskStatus.Pending };

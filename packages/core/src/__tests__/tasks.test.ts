@@ -60,7 +60,7 @@ test("updateTask uses atomic writes under concurrent updates", async () => {
   );
 });
 
-test("updateTask writes acp_session_key and acp_stream_log fields", async () => {
+test("updateTask writes current and role-specific ACP session fields", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-tasks-"));
   const nexumDir = path.join(projectDir, "nexum");
   const activeTasksPath = path.join(nexumDir, "active-tasks.json");
@@ -83,7 +83,11 @@ test("updateTask writes acp_session_key and acp_stream_log fields", async () => 
 
   await updateTask(projectDir, "NX-001", {
     acp_session_key: "session-abc123",
-    acp_stream_log: "/tmp/stream.log"
+    acp_stream_log: "/tmp/stream.log",
+    generator_acp_session_key: "gen-session-abc123",
+    generator_acp_stream_log: "/tmp/gen-stream.log",
+    evaluator_acp_session_key: "eval-session-xyz789",
+    evaluator_acp_stream_log: "/tmp/eval-stream.log",
   });
 
   const rawContents = await readFile(activeTasksPath, "utf8");
@@ -92,6 +96,10 @@ test("updateTask writes acp_session_key and acp_stream_log fields", async () => 
 
   assert.equal(task?.acp_session_key, "session-abc123");
   assert.equal(task?.acp_stream_log, "/tmp/stream.log");
+  assert.equal(task?.generator_acp_session_key, "gen-session-abc123");
+  assert.equal(task?.generator_acp_stream_log, "/tmp/gen-stream.log");
+  assert.equal(task?.evaluator_acp_session_key, "eval-session-xyz789");
+  assert.equal(task?.evaluator_acp_stream_log, "/tmp/eval-stream.log");
 });
 
 test("getUnlockedTasks returns pending tasks whose dependencies are now satisfied", async () => {

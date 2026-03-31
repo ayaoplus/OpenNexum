@@ -73,6 +73,10 @@ export interface Task {
   head_commit?: string;
   acp_session_key?: string;
   acp_stream_log?: string;
+  generator_acp_session_key?: string;
+  generator_acp_stream_log?: string;
+  evaluator_acp_session_key?: string;
+  evaluator_acp_stream_log?: string;
   last_error?: string | null;
   eval_result_path?: string;
   updated_at?: string;

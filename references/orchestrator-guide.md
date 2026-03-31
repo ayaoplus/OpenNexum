@@ -54,7 +54,7 @@ OpenNexum TS 和 orchestrator 的职责边界应当明确：
 nexum track <taskId> <sessionKey> --stream-log <streamLogPath>
 ```
 
-`track` 会写回 `nexum/active-tasks.json`，把 session 信息记录下来，并把任务推进到真实的 `running` / `evaluating`。随后 `nexum status` 就能展示 session key 尾部和最近的流式文本片段。
+`track` 会写回 `nexum/active-tasks.json`，把 session 信息记录下来，并把任务推进到真实的 `running` / `evaluating`。generator / evaluator 的 session key 和 stream log 会分别保留，随后 `nexum status` 就能展示当前活跃 session，并保留另一阶段的排障线索。
 
 ## Heartbeat / Polling Logic
 

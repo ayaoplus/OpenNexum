@@ -43,6 +43,15 @@ export async function runTrack(
     status: trackedRole === 'generator' ? TaskStatus.Running : TaskStatus.Evaluating,
     acp_session_key: sessionKey,
     ...(streamLogPath ? { acp_stream_log: streamLogPath } : {}),
+    ...(trackedRole === 'generator'
+      ? {
+          generator_acp_session_key: sessionKey,
+          ...(streamLogPath ? { generator_acp_stream_log: streamLogPath } : {}),
+        }
+      : {
+          evaluator_acp_session_key: sessionKey,
+          ...(streamLogPath ? { evaluator_acp_stream_log: streamLogPath } : {}),
+        }),
     ...(trackedRole === 'generator' ? { started_at: task.started_at ?? now } : {}),
     ...(baseCommit ? { base_commit: baseCommit } : {}),
     updated_at: now,

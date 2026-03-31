@@ -259,5 +259,5 @@ sessions_spawn(promptFile, runtimeAgentId, label, cwd, mode="run")
 - `Task.batch` 字段标记任务所属批次
 - `ActiveTasksFile.currentBatch` 标记当前默认批次
 - `nexum status --batch <name>` 过滤显示
-- 进度格式：两行显示 `📊 当前批次 (batch-3): 3/6` 和 `📊 总体: 13/15`
+- 进度格式：`📊 batch-3: 3/6  |  总体: 13/15`
 - done 任务超过 20 个时自动归档到 `nexum/history/<batch>.json`

@@ -117,10 +117,22 @@ test('runTrack marks generator sessions as running and evaluator sessions as eva
 
   let tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
-  ) as { tasks: Array<{ id: string; status: string; started_at?: string }> };
+  ) as {
+    tasks: Array<{
+      id: string;
+      status: string;
+      started_at?: string;
+      generator_acp_session_key?: string;
+      generator_acp_stream_log?: string;
+      evaluator_acp_session_key?: string;
+      evaluator_acp_stream_log?: string;
+    }>;
+  };
   let trackedTask = tasksRaw.tasks.find((t) => t.id === taskId);
   assert.equal(trackedTask?.status, 'running');
   assert.ok(trackedTask?.started_at);
+  assert.equal(trackedTask?.generator_acp_session_key, 'session-gen');
+  assert.equal(trackedTask?.generator_acp_stream_log, '/tmp/gen.log');
 
   await writeFile(
     path.join(projectDir, 'nexum', 'dispatch-queue.jsonl'),
@@ -156,9 +168,22 @@ test('runTrack marks generator sessions as running and evaluator sessions as eva
 
   tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
-  ) as { tasks: Array<{ id: string; status: string }> };
+  ) as {
+    tasks: Array<{
+      id: string;
+      status: string;
+      generator_acp_session_key?: string;
+      generator_acp_stream_log?: string;
+      evaluator_acp_session_key?: string;
+      evaluator_acp_stream_log?: string;
+    }>;
+  };
   trackedTask = tasksRaw.tasks.find((t) => t.id === taskId);
   assert.equal(trackedTask?.status, 'evaluating');
+  assert.equal(trackedTask?.generator_acp_session_key, 'session-gen');
+  assert.equal(trackedTask?.generator_acp_stream_log, '/tmp/gen.log');
+  assert.equal(trackedTask?.evaluator_acp_session_key, 'session-eval');
+  assert.equal(trackedTask?.evaluator_acp_stream_log, '/tmp/eval.log');
 
   const queueContents = await readFile(path.join(projectDir, 'nexum', 'dispatch-queue.jsonl'), 'utf8');
   assert.equal(queueContents.trim(), '');
@@ -506,4 +531,42 @@ test('runStatus reports batch progress using currentBatch', async () => {
   }
 
   assert.ok(logs.some((line) => line.includes('📊 batch-a: 1/2  |  总体: 2/3')));
+});
+
+test('runStatus json includes generator and evaluator session fields', async () => {
+  const taskId = 'TEST-JSON';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'JSON status task',
+      status: 'evaluating',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+      generator_acp_session_key: 'session-gen',
+      generator_acp_stream_log: '/tmp/gen.log',
+      evaluator_acp_session_key: 'session-eval',
+      evaluator_acp_stream_log: '/tmp/eval.log',
+      acp_session_key: 'session-eval',
+      acp_stream_log: '/tmp/eval.log',
+    },
+  ], CONTRACT_YAML.replace(/^id: TEST-001$/m, `id: ${taskId}`), taskId);
+
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    lines.push(args.join(' '));
+  };
+
+  try {
+    const { runStatus } = await import(`../commands/status.ts?status-json=${Date.now()}`);
+    await runStatus(projectDir, { json: true });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const parsed = JSON.parse(lines.join('\n')) as Array<Record<string, string>>;
+  assert.equal(parsed[0]?.generator_acp_session_key, 'session-gen');
+  assert.equal(parsed[0]?.generator_acp_stream_log, '/tmp/gen.log');
+  assert.equal(parsed[0]?.evaluator_acp_session_key, 'session-eval');
+  assert.equal(parsed[0]?.evaluator_acp_stream_log, '/tmp/eval.log');
 });

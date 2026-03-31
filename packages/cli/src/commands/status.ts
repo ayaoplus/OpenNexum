@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Command } from 'commander';
 import {
+  getActiveBatch,
   getBatchProgress,
   readTasks,
   TaskStatus,
@@ -9,6 +10,7 @@ import {
 } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
 import { archiveDoneTasks } from '../lib/archive.js';
+import { getDisplaySession, getTrackedSessions } from '../lib/task-session.js';
 
 /** Read the last N non-empty lines from an ACP stream log JSONL file */
 async function getStreamActivity(streamLogPath: string, lines = 2): Promise<string> {
@@ -35,37 +37,12 @@ async function getStreamActivity(streamLogPath: string, lines = 2): Promise<stri
   }
 }
 
-function getCurrentBatch(tasks: Task[]): string | undefined {
-  const batchedTasks = tasks.filter((task): task is Task & { batch: string } => Boolean(task.batch));
-
-  if (batchedTasks.length === 0) {
-    return undefined;
-  }
-
-  const latestTask = batchedTasks.reduce((latest, task) => {
-    if (!latest) {
-      return task;
-    }
-
-    const latestTime = latest.updated_at ? Date.parse(latest.updated_at) : Number.NEGATIVE_INFINITY;
-    const taskTime = task.updated_at ? Date.parse(task.updated_at) : Number.NEGATIVE_INFINITY;
-
-    if (taskTime !== latestTime) {
-      return taskTime > latestTime ? task : latest;
-    }
-
-    return task.batch.localeCompare(latest.batch) > 0 ? task : latest;
-  }, undefined as (Task & { batch: string }) | undefined);
-
-  return latestTask?.batch;
-}
-
 export async function runStatus(
   projectDir: string,
   options: { json?: boolean; batch?: string } = {}
 ): Promise<void> {
   const tasks = await readTasks(projectDir);
-  const currentBatch = getCurrentBatch(tasks);
+  const currentBatch = options.batch ?? await getActiveBatch(projectDir);
   const visibleTasks =
     options.batch === undefined ? tasks : tasks.filter((task) => task.batch === options.batch);
 
@@ -78,6 +55,10 @@ export async function runStatus(
       iteration: task.iteration,
       acp_session_key: task.acp_session_key,
       acp_stream_log: task.acp_stream_log,
+      generator_acp_session_key: task.generator_acp_session_key,
+      generator_acp_stream_log: task.generator_acp_stream_log,
+      evaluator_acp_session_key: task.evaluator_acp_session_key,
+      evaluator_acp_stream_log: task.evaluator_acp_stream_log,
     }));
     console.log(JSON.stringify(output, null, 2));
     return;
@@ -101,31 +82,43 @@ export async function runStatus(
 
   for (const task of visibleTasks) {
     const icon = STATUS_ICONS[task.status] ?? '❓';
-    const sessionInfo = task.acp_session_key
-      ? ` [${task.acp_session_key.slice(-8)}]`
+    const displaySession = getDisplaySession(task);
+    const sessionInfo = displaySession.sessionKey
+      ? ` [${displaySession.sessionKey.slice(-8)}]`
       : '';
 
     let activityLine = '';
     if (
       (task.status === TaskStatus.Running || task.status === TaskStatus.Evaluating) &&
-      task.acp_stream_log
+      displaySession.streamLog
     ) {
-      const activity = await getStreamActivity(task.acp_stream_log);
+      const activity = await getStreamActivity(displaySession.streamLog);
       if (activity) {
         activityLine = `\n    💬 ${activity}`;
       }
     }
 
     let sessionStatus = '';
-    if (task.status === TaskStatus.Running && task.acp_session_key) {
+    if (
+      (task.status === TaskStatus.Running || task.status === TaskStatus.Evaluating) &&
+      displaySession.sessionKey
+    ) {
       try {
-        const s = await getSessionStatus(task.acp_session_key);
+        const s = await getSessionStatus(displaySession.sessionKey);
         sessionStatus = s !== 'running' ? ` (ACP: ${s})` : '';
       } catch { /* ignore */ }
     }
 
+    const trackedSessions = getTrackedSessions(task)
+      .filter((session) => session.sessionKey && session.sessionKey !== displaySession.sessionKey)
+      .map((session) => {
+        const icon = session.role === 'generator' ? '🔨' : '🔍';
+        return `\n    ${icon} ${session.role}: [${session.sessionKey?.slice(-8)}]`;
+      })
+      .join('');
+
     console.log(
-      `${icon} ${task.id}  ${task.name.slice(0, 50)}${sessionInfo}${sessionStatus}${activityLine}`
+      `${icon} ${task.id}  ${task.name.slice(0, 50)}${sessionInfo}${sessionStatus}${trackedSessions}${activityLine}`
     );
   }
 
@@ -133,8 +126,7 @@ export async function runStatus(
 
   if (currentBatch) {
     const batchProgress = await getBatchProgress(projectDir, currentBatch);
-    console.log(`\n📊 当前批次 (${batchProgress.batch}): ${batchProgress.done}/${batchProgress.total}`);
-    console.log(`📊 总体: ${overallDone}/${tasks.length}`);
+    console.log(`\n📊 ${batchProgress.batch}: ${batchProgress.done}/${batchProgress.total}  |  总体: ${overallDone}/${tasks.length}`);
   } else {
     console.log(`\n📊 总体: ${overallDone}/${tasks.length}`);
   }
