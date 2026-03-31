@@ -1,0 +1,39 @@
+id: NEXUM-014
+name: "修正 AGENTS.md 模板：direct push to main，移除禁止 push 规则"
+batch: batch-3
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/init.ts
+    - packages/prompts/src/templates/agents.md
+
+description: "nexum init 生成的 AGENTS.md 模板里有一条错误规范：'禁止直接 push 到 main/master；通过分支或受控流程提交。'。实际开发规范是快速迭代，直接 push main，出问题直接 revert。需要找到模板来源并修正。"
+
+deliverables:
+  - path: packages/cli/src/commands/init.ts
+    description: "找到 AGENTS.md 内容生成位置，将 '禁止直接 push 到 main/master；通过分支或受控流程提交。' 改为 '直接 push 到 main/master，快速迭代，出问题直接 revert。'"
+
+  - path: packages/prompts/src/templates/agents.md
+    description: "如果存在 agents.md 模板文件，同步修正同一条规范。如果不存在此文件则跳过（只写 init.ts）。"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "packages/cli/src/commands/init.ts 中不再包含 '禁止直接 push 到 main' 字样"
+      weight: 3
+    - id: C2
+      desc: "packages/cli/src/commands/init.ts 中包含 '直接 push 到 main' 或等价表述"
+      weight: 3
+    - id: C3
+      desc: "pnpm build 无 TypeScript 编译错误"
+      weight: 2
+    - id: C4
+      desc: "只修改了 scope.files 内的文件"
+      weight: 2
+
+max_iterations: 2

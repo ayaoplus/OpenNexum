@@ -1,0 +1,34 @@
+[
+  {
+    "id": "NEXUM-016",
+    "name": "四个 bug 修复：agent undefined / model gpt-5 / deliver 输出到 Telegram",
+    "status": "done",
+    "batch": "batch-4",
+    "contract_path": "docs/nexum/contracts/NEXUM-016.yaml",
+    "depends_on": [],
+    "iteration": 0,
+    "updated_at": "2026-03-30T17:20:20.446Z",
+    "started_at": "2026-03-30T17:15:03.260Z",
+    "base_commit": "82ead95036aa1069e8036dbdac8a2bd8aea0c6a2",
+    "acp_session_key": "agent:codex:acp:120a43c4-cc5c-4ef5-9541-c3598aa2fd4d",
+    "commit_hash": "674780f386266370f006f400711072f4ad6f3acc",
+    "eval_result_path": "/Users/tongyaojin/code/OpenNexum/nexum/runtime/eval/NEXUM-016-iter-0.yaml",
+    "completed_at": "2026-03-30T17:20:20.446Z"
+  },
+  {
+    "id": "NEXUM-017",
+    "name": "通知优化 + git 英文提交 + gpt-5 上报修正",
+    "status": "done",
+    "batch": "batch-4",
+    "contract_path": "docs/nexum/contracts/NEXUM-017.yaml",
+    "depends_on": [],
+    "iteration": 0,
+    "updated_at": "2026-03-31T00:55:25.095Z",
+    "started_at": "2026-03-30T17:27:18.053Z",
+    "base_commit": "674780f386266370f006f400711072f4ad6f3acc",
+    "acp_session_key": "agent:codex:acp:ff55f6c8-f304-4ad2-823d-442bb09e0c81",
+    "commit_hash": "a1b01a3c0c6f6034236e64f8826007538b465e31",
+    "eval_result_path": "/Users/tongyaojin/code/OpenNexum/nexum/runtime/eval/NEXUM-017-iter-0.yaml",
+    "completed_at": "2026-03-31T00:55:25.094Z"
+  }
+]

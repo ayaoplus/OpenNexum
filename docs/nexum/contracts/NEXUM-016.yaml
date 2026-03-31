@@ -1,0 +1,46 @@
+id: NEXUM-016
+name: "四个 bug 修复：agent undefined / model gpt-5 / deliver 输出到 Telegram / contract.agent 读取"
+batch: batch-4
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/callback.ts
+    - packages/cli/src/commands/spawn.ts
+    - packages/cli/src/commands/eval.ts
+
+description: "修复四个互相关联的 bug：B1 evaluator session deliver 输出到 Telegram；B2 contract.generator/evaluator 应读 contract.agent.generator/evaluator；B3 resolveModelName 过滤名单误拦 gpt-5.4；B4 deliver 未抑制导致 ACP session 输出泄漏。"
+
+deliverables:
+  - path: packages/cli/src/commands/callback.ts
+    description: "1) 修复 B2：所有读取 contract.generator 的地方改为 contract.agent?.generator ?? contract.generator（兼容旧格式），contract.evaluator 同理。2) 修复 B3：resolveModelName 过滤名单从 ['codex','claude','auto','gpt-5','gpt5'] 改为 ['codex','claude','auto']，让 gpt-5.4 等具体版本号直接穿透使用。3) 修复 B1：dispatchViaWebhook 已有 deliver:false，确认 evaluator webhook dispatch 也传了 deliver:false。"
+
+  - path: packages/cli/src/commands/spawn.ts
+    description: "修复 B2：读取 contract.generator 的地方改为 contract.agent?.generator ?? contract.generator。"
+
+  - path: packages/cli/src/commands/eval.ts
+    description: "修复 B2：读取 contract.evaluator 的地方改为 contract.agent?.evaluator ?? contract.evaluator。同时修复 B4：runSpawnEval 里 spawnAcpSession（现在是 dispatchViaWebhook）传的 payload 里确保有 deliver:false，避免 evaluator session 输出发到 Telegram。"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "callback.ts 中所有 contract.generator/contract.evaluator 读取都加了 contract.agent?.generator ?? 兼容"
+      weight: 3
+    - id: C2
+      desc: "resolveModelName 过滤名单不包含 gpt-5 或 gpt5，让 gpt-5.4 直接作为模型名使用"
+      weight: 2
+    - id: C3
+      desc: "spawn.ts 和 eval.ts 中 contract.generator/evaluator 读取也加了 agent 兼容"
+      weight: 2
+    - id: C4
+      desc: "pnpm build 无 TypeScript 编译错误"
+      weight: 2
+    - id: C5
+      desc: "只修改了 scope.files 内的三个文件"
+      weight: 1
+
+max_iterations: 3

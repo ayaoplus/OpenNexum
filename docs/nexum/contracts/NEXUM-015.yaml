@@ -1,0 +1,35 @@
+id: NEXUM-015
+name: "status 命令按 batch 显示进度，archive 前不混入历史任务"
+batch: batch-3
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/status.ts
+
+description: "当前 nexus status 的 '📊 总体: X/Y' 是跨所有 active tasks 计算，包含没有 batch 字段的历史任务，导致进度数字虚高。期望行为：如果存在有 batch 字段的任务，优先显示当前 batch（最新的 batch 值）的进度；同时在末尾保留总体数字作为参考。"
+
+deliverables:
+  - path: packages/cli/src/commands/status.ts
+    description: "修改进度显示逻辑：1) 找出所有有 batch 字段的任务中最新的 batch 值（按字母序最大，或按任务 updated_at 最新）作为 currentBatch。2) 如果 currentBatch 存在，在末尾显示两行：'📊 当前批次 (batch-N): X/Y' 和 '📊 总体: X/Y'。3) 如果没有任何任务有 batch 字段，只显示 '📊 总体: X/Y'（保持现有行为）。"
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "packages/cli/src/commands/status.ts 存在 currentBatch 相关逻辑，找出最新 batch"
+      weight: 3
+    - id: C2
+      desc: "有 batch 任务时显示两行进度（当前批次 + 总体），无 batch 任务时只显示总体"
+      weight: 3
+    - id: C3
+      desc: "pnpm build 无 TypeScript 编译错误"
+      weight: 2
+    - id: C4
+      desc: "只修改了 packages/cli/src/commands/status.ts"
+      weight: 2
+
+max_iterations: 2

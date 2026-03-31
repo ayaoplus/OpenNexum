@@ -1,6 +1,6 @@
 {
   "name": "@nexum/prompts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Prompt template rendering for nexum",
   "type": "module",
   "main": "./dist/index.js",

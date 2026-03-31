@@ -1,10 +1,10 @@
 ---
 name: opennexum
-version: 2.1.0
-description: Contract-driven multi-agent orchestration with ACP. Event-driven dispatch, cross-review, auto-retry, parallel session support.
+version: 2.1.2
+description: Contract-driven multi-agent orchestration with ACP. Webhook + dispatch-queue dual dispatch, cross-review, auto-retry, batch progress tracking.
 requires:
   node: ">=20"
-  tools: [pnpm, openclaw, acpx]
+  tools: [pnpm, openclaw]
 ---
 
 # OpenNexum
@@ -18,39 +18,75 @@ Contract-driven coding agent orchestration via OpenClaw ACP.
 - Tracking task progress with Telegram notifications
 
 ## Architecture
-- **Event-driven**: callback triggers eval → complete → next-task (no polling for dispatch)
-- **Watch daemon**: health-only, stuck task detection (dispatch by callback)
-- **Cross-review**: codex-gen → claude-eval, claude-gen → codex-eval
-- **Auto-routing**: `generator: auto` in Contract YAML → system selects agent by task type
+
+### Dispatch (dual-path)
+1. **Webhook (real-time)**: `nexum callback` → POST `/hooks/agent` → orchestrator wakes up immediately
+2. **Dispatch Queue (fallback)**: `nexum callback` → writes `nexum/dispatch-queue.jsonl` → heartbeat processes within 10min
+
+### Cross-review
+- codex-gen → claude-eval, claude-gen → codex-eval
+
+### Auto-routing
+- `generator: auto` in Contract YAML → system selects agent by task type
+
+### Batch progress
+- `nexum status` shows current batch progress + overall progress
 
 ## Agent Naming: `<model>-<role>-<number>`
 - codex-gen-01~03: backend/API code
-- claude-gen-01~02: user-facing WebUI
+- claude-gen-01~02: user-facing WebUI/docs
 - codex-eval-01 / claude-eval-01: cross-review
 - claude-plan-01: architecture (opus)
-- claude-write-01: docs/creative
 
-## Quick Start
-1. `pnpm install && pnpm build`
-2. `nexum init --project <dir>` — interactive setup
-3. Create Contract YAML in `docs/nexum/contracts/`
-4. Register task in `nexum/active-tasks.json`
-5. `nexum spawn <taskId>` → spawn via acpx
-6. Generator completes → `nexum callback <taskId>` → auto eval → auto complete
+## Key CLI Commands
 
-## Key Commands
-- `nexum init` — interactive project setup
-- `nexum spawn/eval <taskId>` — generate spawn payload
-- `nexum callback <taskId> --role generator|evaluator` — process callback + auto-dispatch
-- `nexum status` — task overview
-- `nexum health` — stuck detection
-- `nexum watch install` — register daemon
+```bash
+nexum init [--project <dir>] [--yes]
+nexum spawn <taskId> [--project <dir>]
+nexum track <taskId> <sessionKey>
+nexum callback <taskId> [--role evaluator] [--model gpt-5.4] [--input-tokens N] [--output-tokens N]
+nexum eval <taskId>
+nexum complete <taskId> <pass|fail|escalated>
+nexum status [--project <dir>]
+nexum archive [--project <dir>]
+nexum health [--project <dir>]
+nexum retry <taskId> --force
+```
 
-## Notification (8 types, via openclaw message send)
-🚀 Dispatch → 🔨 [1/2] Code Done → ✅ [2/2] Review Pass / ❌ Fail / 🚨 Escalate
-⚠️ Commit Missing / 🚨 Health Alert / 🎉 Batch Done
+## Contract YAML
 
-## Docs
-- Architecture: docs/design/ARCHITECTURE.md
-- Commit Convention: docs/design/COMMIT-CONVENTION.md
-- V2 Redesign: docs/design/NEXUM-V2-REDESIGN.md
+```yaml
+id: TASK-001
+name: "implement feature X"
+batch: batch-1
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+scope:
+  files:
+    - src/feature.ts
+deliverables:
+  - path: src/feature.ts
+    description: "..."
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "..."
+      weight: 2
+max_iterations: 3
+```
+
+## Callback Protocol (injected into AGENTS.md via nexum init)
+
+After completing a task, run:
+```bash
+nexum callback <taskId> --project <projectDir> \
+  --model gpt-5.4 \
+  --input-tokens <n> \
+  --output-tokens <n>
+```
+
+## Git Convention
+- Push directly to `main`, revert if needed
+- English Conventional Commits: `feat(scope): TASK-ID: description`
