@@ -6,11 +6,11 @@ import {
   getTask,
   updateTask,
   loadConfig,
-  resolveAgentCli,
+  resolveAgentExecution,
 } from '@nexum/core';
-import type { AgentCli } from '@nexum/core';
+import type { AgentCli, AgentRuntime } from '@nexum/core';
 import { renderGeneratorPrompt } from '@nexum/prompts';
-import { resolveAgents } from '../lib/auto-route.js';
+import { resolveContractAgents } from '../lib/resolve-contract-agents.js';
 
 // ---------- commit type detection ----------
 
@@ -43,6 +43,8 @@ export interface SpawnPayload {
   taskName: string;
   agentId: string;
   agentCli: AgentCli;
+  runtime: AgentRuntime;
+  runtimeAgentId: string;
   promptFile: string;
   promptContent: string;
   label: string;
@@ -87,7 +89,7 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   );
 
   const config = await loadConfig(projectDir);
-  const resolvedContract = { ...contract, ...resolveAgents(contract, config) };
+  const resolvedContract = resolveContractAgents(contract, config);
   // If git.remote is explicitly set to empty string, skip push; otherwise default to 'origin'
   const gitRemoteRaw = config.git?.remote;
   const gitRemote = gitRemoteRaw === '' ? '' : (gitRemoteRaw ?? 'origin');
@@ -122,14 +124,16 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   const promptFile = path.join(promptsDir, `${taskId}-gen-${Date.now()}.md`);
   await writeFile(promptFile, promptContent, 'utf8');
 
-  const agentCli = resolveAgentCli(config, resolvedContract.generator);
+  const execution = resolveAgentExecution(config, resolvedContract.generator);
   const label = `nexum-${taskId.toLowerCase()}-${resolvedContract.generator}`;
 
   return {
     taskId,
     taskName: resolvedContract.name,
     agentId: resolvedContract.generator,
-    agentCli,
+    agentCli: execution.cli,
+    runtime: execution.runtime,
+    runtimeAgentId: execution.runtimeAgentId,
     promptFile,
     promptContent,
     label,
@@ -147,14 +151,13 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
-  const generatorAgentId = getGeneratorAgentId(contract);
-  const evaluatorAgentId = getEvaluatorAgentId(contract);
   const config = await loadConfig(projectDir);
-  const contractWithAgents = { ...contract, generator: generatorAgentId, evaluator: evaluatorAgentId };
-  const resolvedContract =
-    generatorAgentId === 'auto' || evaluatorAgentId === 'auto'
-      ? { ...contractWithAgents, ...resolveAgents(contractWithAgents, config) }
-      : contractWithAgents;
+  const contractWithAgents = {
+    ...contract,
+    generator: getGeneratorAgentId(contract),
+    evaluator: getEvaluatorAgentId(contract),
+  };
+  const resolvedContract = resolveContractAgents(contractWithAgents, config);
 
   const iteration = task.iteration ?? 0;
   const evalResultPath = path.join(
@@ -183,14 +186,16 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
     eval_result_path: evalResultPath,
   });
 
-  const agentCli = resolveAgentCli(config, resolvedContract.evaluator);
+  const execution = resolveAgentExecution(config, resolvedContract.evaluator);
   const label = `nexum-${taskId.toLowerCase()}-eval`;
 
   return {
     taskId,
     taskName: resolvedContract.name,
     agentId: resolvedContract.evaluator,
-    agentCli,
+    agentCli: execution.cli,
+    runtime: execution.runtime,
+    runtimeAgentId: execution.runtimeAgentId,
     promptFile,
     promptContent,
     label,

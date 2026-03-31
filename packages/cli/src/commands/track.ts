@@ -11,11 +11,12 @@ import { formatDispatch, sendMessage } from '@nexum/notify';
 import { loadConfig } from '@nexum/core';
 import path from 'node:path';
 import { acknowledgeDispatchEntries } from '../lib/dispatch-queue.js';
+import { resolveContractAgents } from '../lib/resolve-contract-agents.js';
 
 type TrackRole = 'generator' | 'evaluator';
 
 /**
- * track: called by the orchestrator (AI agent) after sessions_spawn succeeds.
+ * track: called by the orchestrator (AI agent) after a runtime session is started.
  * Writes the sessionKey (and optional streamLogPath) to active-tasks.json
  * and sends a Telegram dispatch notification.
  */
@@ -68,23 +69,23 @@ export async function runTrack(
         ? task.contract_path
         : path.join(projectDir, task.contract_path);
       const contract = await parseContract(contractAbsPath);
+      const resolvedContract = resolveContractAgents(contract, config);
       const tasks = await readTasks(projectDir);
       const doneCount = tasks.filter((t) => t.status === TaskStatus.Done).length;
       const progress = `${doneCount}/${tasks.length}`;
 
-      const config = await loadConfig(projectDir);
       const trackedAgentId =
         trackedRole === 'evaluator'
-          ? contract.agent?.evaluator ?? contract.evaluator
-          : contract.agent?.generator ?? contract.generator;
+          ? resolvedContract.evaluator
+          : resolvedContract.generator;
       const agentConfig = config.agents?.[trackedAgentId];
       const msg = formatDispatch({
         taskId,
-        taskName: contract.name,
+        taskName: resolvedContract.name,
         agent: `${trackedAgentId} (${taskId})`,
         model: agentConfig?.model,
-        scopeCount: contract.scope.files.length,
-        deliverablesCount: contract.deliverables.length,
+        scopeCount: resolvedContract.scope.files.length,
+        deliverablesCount: resolvedContract.deliverables.length,
         progress,
       });
       await sendMessage(target, msg);
@@ -99,10 +100,10 @@ export async function runTrack(
 export function registerTrack(program: Command): void {
   program
     .command('track <taskId> <sessionKey>')
-    .description('Record ACP session key for a running task (called by orchestrator after spawn)')
+    .description('Record runtime session key for a running task (called by orchestrator after spawn)')
     .option('--project <dir>', 'Project directory', process.cwd())
     .option('--role <role>', 'generator | evaluator')
-    .option('--stream-log <path>', 'Path to ACP stream log file (from sessions_spawn streamLogPath)')
+    .option('--stream-log <path>', 'Path to runtime stream log file (if available)')
     .action(async (
       taskId: string,
       sessionKey: string,

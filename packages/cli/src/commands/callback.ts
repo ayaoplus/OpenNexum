@@ -29,6 +29,7 @@ import {
 import { runComplete } from './complete.js';
 import { enqueueDispatchEntry } from '../lib/dispatch-queue.js';
 import { dispatchAgentWebhook } from '../lib/webhook.js';
+import { resolveContractAgents } from '../lib/resolve-contract-agents.js';
 
 const execFileAsync = promisify(execFile);
 const SESSION_COUNTER_FILENAME = 'session-counter.json';
@@ -45,14 +46,6 @@ interface CallbackOptions {
 }
 
 type SessionRole = 'gen' | 'eval';
-type ContractWithAgentCompat = {
-  generator: string;
-  evaluator: string;
-  agent?: {
-    generator?: string;
-    evaluator?: string;
-  };
-};
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
@@ -93,14 +86,6 @@ async function getLastCommitMessage(projectDir: string): Promise<string> {
   } catch {
     return '';
   }
-}
-
-function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
-  return contract.agent?.generator ?? contract.generator;
-}
-
-function getEvaluatorAgentId(contract: ContractWithAgentCompat): string {
-  return contract.agent?.evaluator ?? contract.evaluator;
 }
 
 async function getNextSessionName(role: SessionRole, projectDir: string): Promise<string> {
@@ -177,7 +162,8 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
 
   const contract = await loadContract(projectDir, task.contract_path);
   const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, git: undefined } as NexumConfig));
-  const generatorAgentId = getGeneratorAgentId(contract);
+  const resolvedContract = resolveContractAgents(contract, config);
+  const generatorAgentId = resolvedContract.generator;
 
   const inputTokens = parseInt(options.inputTokens ?? '0', 10) || 0;
   const outputTokens = parseInt(options.outputTokens ?? '0', 10) || 0;
@@ -209,7 +195,7 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
           model,
           inputTokens,
           outputTokens,
-          scopeFiles: contract.scope.files,
+          scopeFiles: resolvedContract.scope.files,
           commitHash: currentHead,
           commitMessage,
           iteration: task.iteration,
@@ -251,7 +237,8 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   const contract = await loadContract(projectDir, task.contract_path);
   const config = await loadConfig(projectDir).catch(() => ({ notify: undefined } as NexumConfig));
   const target = config.notify?.target;
-  const evaluatorAgentId = getEvaluatorAgentId(contract);
+  const resolvedContract = resolveContractAgents(contract, config);
+  const evaluatorAgentId = resolvedContract.evaluator;
 
   const evalResultPath = resolvePath(projectDir, task.eval_result_path);
   const verdict = await readEvalVerdict(evalResultPath);
@@ -274,7 +261,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
       const msg = formatReviewPassed({
         taskId,
-        taskName: contract.name,
+        taskName: resolvedContract.name,
         evaluator: evaluatorAgentId,
         model: evalModel,
         elapsedMs,
@@ -313,7 +300,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
     } else if (result.action === 'retry') {
       const msg = formatReviewFailed({
         taskId,
-        taskName: contract.name,
+        taskName: resolvedContract.name,
         evaluator: evaluatorAgentId,
         model: evalModel,
         iteration,
@@ -331,7 +318,7 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
         : [];
       const msg = formatEscalation({
         taskId,
-        taskName: contract.name,
+        taskName: resolvedContract.name,
         evaluator: evaluatorAgentId,
         history,
         retryCommand: `nexum retry ${taskId} --force`,

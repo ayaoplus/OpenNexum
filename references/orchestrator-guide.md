@@ -11,21 +11,23 @@ OpenNexum TS 和 orchestrator 的职责边界应当明确：
 
 这样做的原因很简单：任务语义属于仓库，运行时控制属于编排层。
 
-## From `nexum spawn` to `sessions_spawn`
+## From `nexum spawn` to Runtime Dispatch
 
-`nexum spawn <taskId>` 和 `nexum eval <taskId>` 都会输出 JSON payload。编排者应读取其中的关键字段并映射到 `sessions_spawn` 参数。
+`nexum spawn <taskId>` 和 `nexum eval <taskId>` 都会输出 JSON payload。编排者应把它看成“逻辑任务 + 执行目标”两层信息，而不是只取一个 `agentId` 字段。
 
 常见映射关系如下：
 
-| `sessions_spawn` param | Source | Meaning |
+| Field | Source | Meaning |
 | --- | --- | --- |
-| `runtime` | fixed value | Usually `acp` |
-| `agentId` | `payload.agentId` | Contract-selected generator or evaluator |
-| `task` | `payload.promptContent` or task file wrapper | The actual prompt/instruction payload |
-| `cwd` | `payload.cwd` | Working directory for the agent |
-| `streamTo` | orchestrator-defined path or sink | Where streaming logs should be written |
+| logical agent | `payload.agentId` | Contract-selected generator or evaluator, used for routing / attribution |
+| runtime | `payload.runtime` | Which executor to use, currently `acp` or `tmux` |
+| runtime agent | `payload.runtimeAgentId` | The backend agent ID passed to the executor |
+| CLI family | `payload.agentCli` | Human-readable backend family (`codex` / `claude`) |
+| task | `payload.promptContent` or task file wrapper | The actual prompt/instruction payload |
+| cwd | `payload.cwd` | Working directory for the agent |
+| streamTo | orchestrator-defined path or sink | Where streaming logs should be written |
 
-一个推荐的概念请求如下：
+对 `acp` runtime，一个推荐的概念请求如下：
 
 ```json
 {
@@ -37,26 +39,30 @@ OpenNexum TS 和 orchestrator 的职责边界应当明确：
 }
 ```
 
-如果你的环境不是直接把 prompt 文本放进 `task` 字段，而是传 `task-file`、URI 或附件句柄，也可以做适配。关键点不是字段名表面一致，而是要保留这五个语义：运行时、目标 agent、任务内容、工作目录、日志流目标。
+如果 `payload.runtime === "tmux"`，则不要再调用 `sessions_spawn`。应改走你的 tmux / PTY dispatcher，并把 `payload.runtimeAgentId` 作为底层 CLI/backend 名称使用。
+
+如果你的环境不是直接把 prompt 文本放进 `task` 字段，而是传 `task-file`、URI 或附件句柄，也可以做适配。关键点不是字段名表面一致，而是要保留这几层语义：逻辑 agent、运行时、目标 backend、任务内容、工作目录、日志流目标。
 
 ## Recommended Spawn Sequence
 
 1. Run `nexum spawn <taskId>` or `nexum eval <taskId>`.
 2. Parse the JSON payload.
-3. Call `sessions_spawn` with `runtime`, `agentId`, `task`, `cwd`, and `streamTo`.
-4. Capture `sessionKey`.
-5. Capture `streamLogPath` if the ACP runtime returns one.
-6. Persist both by calling:
+3. Branch on `payload.runtime`.
+4. For `acp`, call `sessions_spawn` with `payload.runtimeAgentId`, `task`, `cwd`, and `streamTo`.
+5. For `tmux`, call your tmux / PTY dispatcher with `payload.runtimeAgentId`, `task`, and `cwd`.
+6. Capture `sessionKey`.
+7. Capture `streamLogPath` if the runtime returns one.
+8. Persist both by calling:
 
 ```bash
 nexum track <taskId> <sessionKey> --stream-log <streamLogPath>
 ```
 
-`track` 会写回 `nexum/active-tasks.json`，把 `acp_session_key` 和 `acp_stream_log` 记录下来。随后 `nexum status` 就能展示 session key 尾部和最近的流式文本片段。
+`track` 会写回 `nexum/active-tasks.json`，把 session 信息记录下来，并把任务推进到真实的 `running` / `evaluating`。随后 `nexum status` 就能展示 session key 尾部和最近的流式文本片段。
 
 ## Heartbeat / Polling Logic
 
-当前仓库里已有一套明确的 heartbeat 逻辑，来源于 `packages/spawn/src/status.ts`：
+当前仓库里已有一套明确的 heartbeat 逻辑，主要针对 ACP session，来源于 `packages/spawn/src/status.ts`：
 
 - 默认超时: `5 * 60 * 1000` ms，即 5 分钟
 - 默认轮询间隔: `1000` ms，即 1 秒
@@ -112,11 +118,11 @@ timeout => escalate or mark infrastructure failure
 推荐把 generator 和 evaluator 看作同一套编排模板的两次实例化：
 
 1. `nexum spawn <taskId>`
-2. spawn generator session
+2. 按 `payload.runtime` 派发 generator session
 3. `nexum track ...`
 4. heartbeat until generator finishes
 5. `nexum eval <taskId>`
-6. spawn evaluator session
+6. 按 `payload.runtime` 派发 evaluator session
 7. `nexum track ...` for evaluator if you maintain a separate stream
 8. heartbeat until evaluator finishes
 9. `nexum complete <taskId> <verdict>`
@@ -134,19 +140,28 @@ timeout => escalate or mark infrastructure failure
 - Always store a stream log path if the runtime can provide one.
 - Treat `unknown` as an infrastructure signal, not a business verdict.
 - Keep `cwd` equal to the project root returned by the payload unless you have a strong reason not to.
+- Treat `payload.agentId` as a logical identifier only; execution should follow `payload.runtime` + `payload.runtimeAgentId`.
+- Claude logical agents default to `tmux/claude`; do not force them onto ACP unless you have an explicit backend override.
 - Prefer idempotent orchestration steps so you can resume after partial failure.
 
 ## Minimal Example
 
 ```text
 payload = nexum spawn NX2-005
-session = sessions_spawn(
-  runtime="acp",
-  agentId=payload.agentId,
-  task=payload.promptContent,
-  cwd=payload.cwd,
-  streamTo="/tmp/nexum/NX2-005-gen.jsonl"
-)
+session =
+  payload.runtime == "acp"
+    ? sessions_spawn(
+        runtime="acp",
+        agentId=payload.runtimeAgentId,
+        task=payload.promptContent,
+        cwd=payload.cwd,
+        streamTo="/tmp/nexum/NX2-005-gen.jsonl"
+      )
+    : tmux_spawn(
+        agentId=payload.runtimeAgentId,
+        task=payload.promptContent,
+        cwd=payload.cwd
+      )
 nexum track NX2-005 session.sessionKey --stream-log /tmp/nexum/NX2-005-gen.jsonl
 heartbeat(session.sessionKey)
 payload2 = nexum eval NX2-005

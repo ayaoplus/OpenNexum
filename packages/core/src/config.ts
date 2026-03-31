@@ -2,11 +2,18 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 export type AgentCli = "codex" | "claude";
+export type AgentRuntime = "acp" | "tmux";
+
+export interface AgentExecutionConfig {
+  runtime?: AgentRuntime;
+  agentId?: string;
+}
 
 export interface AgentConfig {
   cli: AgentCli;
   model?: string;
   reasoning?: string;
+  execution?: AgentExecutionConfig;
 }
 
 export interface RoutingRule {
@@ -55,6 +62,12 @@ export interface NexumConfig {
   webhook?: WebhookConfig;
 }
 
+export interface ResolvedAgentExecution {
+  cli: AgentCli;
+  runtime: AgentRuntime;
+  runtimeAgentId: string;
+}
+
 export async function loadConfig(projectDir: string): Promise<NexumConfig> {
   const configPath = path.join(projectDir, "nexum", "config.json");
 
@@ -71,6 +84,30 @@ export async function loadConfig(projectDir: string): Promise<NexumConfig> {
 
 export function resolveAgentCli(config: NexumConfig, agentId: string): AgentCli {
   return config.agents?.[agentId]?.cli ?? "codex";
+}
+
+export function resolveAgentExecution(
+  config: NexumConfig,
+  logicalAgentId: string
+): ResolvedAgentExecution {
+  const cli = resolveAgentCli(config, logicalAgentId);
+  const execution = config.agents?.[logicalAgentId]?.execution;
+  const runtime = execution?.runtime ?? defaultRuntimeForCli(cli);
+  const runtimeAgentId = execution?.agentId ?? defaultRuntimeAgentId(runtime, cli);
+
+  return { cli, runtime, runtimeAgentId };
+}
+
+function defaultRuntimeForCli(cli: AgentCli): AgentRuntime {
+  return cli === "claude" ? "tmux" : "acp";
+}
+
+function defaultRuntimeAgentId(runtime: AgentRuntime, cli: AgentCli): string {
+  if (runtime === "acp") {
+    return cli === "claude" ? "codex" : cli;
+  }
+
+  return cli;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

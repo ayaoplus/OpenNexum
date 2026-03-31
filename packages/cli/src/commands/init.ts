@@ -123,6 +123,16 @@ interface WizardAnswers {
   watchTimeoutMin: number;
 }
 
+type InitAgentConfig = {
+  cli: string;
+  model?: string;
+  reasoning?: string;
+  execution: {
+    runtime: string;
+    agentId: string;
+  };
+};
+
 async function runWizard(projectDir: string, useDefaults: boolean): Promise<WizardAnswers> {
   const defaultProjectName = path.basename(projectDir);
 
@@ -232,9 +242,26 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
   const answers = await runWizard(projectDir, useDefaults);
 
   // Build agents config: only write detected CLIs; fallback to both if none found
-  const agents: Record<string, { cli: string }> = {};
-  if (cliAvail.codex) agents["codex"] = { cli: "codex" };
-  if (cliAvail.claude) agents["claude"] = { cli: "claude" };
+  const agents: Record<string, InitAgentConfig> = {};
+  if (cliAvail.codex) {
+    Object.assign(agents, {
+      "codex-gen-01": buildInitAgent("codex", "gpt-5.4", "high"),
+      "codex-gen-02": buildInitAgent("codex", "gpt-5.4", "high"),
+      "codex-gen-03": buildInitAgent("codex", "gpt-5.4", "high"),
+      "codex-frontend-01": buildInitAgent("codex", "gpt-5.4", "medium"),
+      "codex-eval-01": buildInitAgent("codex", "gpt-5.4", "high"),
+      "codex-e2e-01": buildInitAgent("codex", "gpt-5.4", "medium"),
+    });
+  }
+  if (cliAvail.claude) {
+    Object.assign(agents, {
+      "claude-gen-01": buildInitAgent("claude", "sonnet-4-6"),
+      "claude-gen-02": buildInitAgent("claude", "sonnet-4-6"),
+      "claude-eval-01": buildInitAgent("claude", "sonnet-4-6"),
+      "claude-plan-01": buildInitAgent("claude", "opus-4-6"),
+      "claude-write-01": buildInitAgent("claude", "sonnet-4-6"),
+    });
+  }
   // If neither CLI is available, leave agents empty (warn already printed above)
 
   // Build full config
@@ -297,6 +324,23 @@ export async function runInit(projectDir: string, yes: boolean): Promise<void> {
   for (const file of created) {
     console.log(`  写入 ${path.relative(projectDir, file)}`);
   }
+}
+
+function buildInitAgent(cli: "codex" | "claude", model: string, reasoning?: string): InitAgentConfig {
+  return {
+    cli,
+    model,
+    ...(reasoning ? { reasoning } : {}),
+    execution: cli === "claude"
+      ? {
+          runtime: "tmux",
+          agentId: "claude",
+        }
+      : {
+          runtime: "acp",
+          agentId: "codex",
+        },
+  };
 }
 
 export function registerInit(program: Command): void {

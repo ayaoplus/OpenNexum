@@ -75,6 +75,8 @@ test('runSpawn reads contract and returns generator payload with correct agentId
   const payload = await runSpawn(taskId, projectDir);
 
   assert.equal(payload.agentId, 'cc-frontend', 'agentId should match contract.generator');
+  assert.equal(payload.runtime, 'acp', 'unknown agents should default to ACP');
+  assert.equal(payload.runtimeAgentId, 'codex', 'unknown ACP agents should default to codex backend');
   assert.equal(payload.taskId, taskId);
   assert.ok(
     payload.promptFile.includes(taskId),
@@ -227,6 +229,8 @@ test('runComplete with fail and iteration < max_iterations returns retry payload
 
   assert.equal(result.action, 'retry');
   assert.equal(result.retryPayload?.agentId, 'cc-frontend', 'retry should use contract.generator');
+  assert.equal(result.retryPayload?.runtime, 'acp');
+  assert.equal(result.retryPayload?.runtimeAgentId, 'codex');
   assert.equal(result.retryPayload?.taskId, taskId);
   assert.equal(result.retryPayload?.nextIteration, 1);
   assert.ok(result.retryPayload?.promptFile.includes(`${taskId}-retry-`));
@@ -284,9 +288,61 @@ test('runComplete auto-archives done tasks once the active list exceeds 20 done 
   delete testingGlobals.__nexumCliSendMessage;
 });
 
+test('runComplete resolves auto-routed retry payload to the same logical agent family', async () => {
+  const taskId = 'TEST-AUTO';
+  const contract = CONTRACT_YAML
+    .replace(/^id: TEST-001$/m, `id: ${taskId}`)
+    .replace(/^name: Test Task$/m, 'name: Frontend Portal')
+    .replace(/^generator: cc-frontend$/m, 'generator: auto');
+  const projectDir = await setupProject(
+    [
+      {
+        id: taskId,
+        name: 'Frontend Portal',
+        status: 'evaluating',
+        contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+        depends_on: [],
+        iteration: 0,
+        started_at: new Date(Date.now() - 5000).toISOString(),
+      },
+    ],
+    contract,
+    taskId
+  );
+
+  await writeFile(
+    path.join(projectDir, 'nexum', 'config.json'),
+    JSON.stringify(
+      {
+        agents: {
+          'claude-gen-01': {
+            cli: 'claude',
+            execution: {
+              runtime: 'tmux',
+              agentId: 'claude',
+            },
+          },
+        },
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  const { runComplete } = await import(`../commands/complete.ts?auto-retry=${Date.now()}`);
+  const result = await runComplete(taskId, 'fail', projectDir);
+
+  assert.equal(result.action, 'retry');
+  assert.equal(result.retryPayload?.agentId, 'claude-gen-01');
+  assert.equal(result.retryPayload?.agentCli, 'claude');
+  assert.equal(result.retryPayload?.runtime, 'tmux');
+  assert.equal(result.retryPayload?.runtimeAgentId, 'claude');
+});
+
 // ─── C5: config eval→codex mapping is resolved in spawn payload ───
 
-test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', async () => {
+test('runSpawnEval resolves evaluator execution target from config', async () => {
   const taskId = 'TEST-001';
   const projectDir = await setupProject([
     {
@@ -303,7 +359,22 @@ test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', asyn
   const nexumDir = path.join(projectDir, 'nexum');
   await writeFile(
     path.join(nexumDir, 'config.json'),
-    JSON.stringify({ agents: { eval: { cli: 'codex', model: 'gpt-4o' } } }, null, 2),
+    JSON.stringify(
+      {
+        agents: {
+          eval: {
+            cli: 'codex',
+            model: 'gpt-4o',
+            execution: {
+              runtime: 'acp',
+              agentId: 'codex-evaluator',
+            },
+          },
+        },
+      },
+      null,
+      2
+    ),
     'utf8'
   );
 
@@ -313,7 +384,9 @@ test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', asyn
   const payload = await runSpawnEval(taskId, projectDir);
 
   assert.equal(payload.agentCli, 'codex', 'agentCli should be codex per config');
-  assert.equal(payload.agentId, 'eval', 'agentId should be contract.evaluator');
+  assert.equal(payload.agentId, 'eval', 'agentId should remain the logical evaluator id');
+  assert.equal(payload.runtime, 'acp', 'runtime should come from execution config');
+  assert.equal(payload.runtimeAgentId, 'codex-evaluator', 'runtime agent should come from execution config');
   const tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
   ) as { tasks: Array<{ id: string; status: string; eval_result_path?: string }> };
@@ -325,6 +398,54 @@ test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', asyn
   );
 
   delete testingGlobals.__nexumCliSendMessage;
+});
+
+test('runEval delegates to evaluator payload generation and preserves claude tmux defaults', async () => {
+  const taskId = 'TEST-CLAUDE';
+  const contract = CONTRACT_YAML
+    .replace(/^id: TEST-001$/m, `id: ${taskId}`)
+    .replace(/^generator: cc-frontend$/m, 'generator: codex-gen-01')
+    .replace(/^evaluator: eval$/m, 'evaluator: claude-eval-01');
+  const projectDir = await setupProject(
+    [
+      {
+        id: taskId,
+        name: 'Test Task',
+        status: 'generator_done',
+        contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+        depends_on: [],
+        iteration: 0,
+      },
+    ],
+    contract,
+    taskId
+  );
+
+  await writeFile(
+    path.join(projectDir, 'nexum', 'config.json'),
+    JSON.stringify(
+      {
+        agents: {
+          'claude-eval-01': {
+            cli: 'claude',
+            model: 'sonnet-4-6',
+          },
+        },
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  const { runEval } = await import(`../commands/eval.ts?eval=${Date.now()}`);
+  const payload = await runEval(taskId, projectDir);
+
+  assert.equal(payload.agentId, 'claude-eval-01');
+  assert.equal(payload.agentCli, 'claude');
+  assert.equal(payload.runtime, 'tmux');
+  assert.equal(payload.runtimeAgentId, 'claude');
+  assert.ok(payload.promptContent.includes(taskId));
 });
 
 test('runStatus reports batch progress using currentBatch', async () => {

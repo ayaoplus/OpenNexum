@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadConfig, resolveAgentCli } from "../config";
+import { loadConfig, resolveAgentCli, resolveAgentExecution } from "../config";
 
 test("loadConfig returns empty object when config.json does not exist", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "nexum-config-"));
@@ -52,4 +52,71 @@ test("resolveAgentCli defaults to codex when agent not in config", () => {
 test("resolveAgentCli defaults to codex when agents map is empty", () => {
   const config = { agents: {} };
   assert.equal(resolveAgentCli(config, "any-agent"), "codex");
+});
+
+test("resolveAgentExecution defaults codex agents to ACP codex backend", () => {
+  const config = {
+    agents: {
+      "codex-gen-01": { cli: "codex" as const },
+    },
+  };
+
+  assert.deepEqual(resolveAgentExecution(config, "codex-gen-01"), {
+    cli: "codex",
+    runtime: "acp",
+    runtimeAgentId: "codex",
+  });
+});
+
+test("resolveAgentExecution defaults claude agents to tmux claude backend", () => {
+  const config = {
+    agents: {
+      "claude-gen-01": { cli: "claude" as const },
+    },
+  };
+
+  assert.deepEqual(resolveAgentExecution(config, "claude-gen-01"), {
+    cli: "claude",
+    runtime: "tmux",
+    runtimeAgentId: "claude",
+  });
+});
+
+test("resolveAgentExecution honors explicit execution mapping", () => {
+  const config = {
+    agents: {
+      review: {
+        cli: "claude" as const,
+        execution: {
+          runtime: "acp" as const,
+          agentId: "review-acp",
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(resolveAgentExecution(config, "review"), {
+    cli: "claude",
+    runtime: "acp",
+    runtimeAgentId: "review-acp",
+  });
+});
+
+test("resolveAgentExecution falls back to codex ACP backend when claude is forced onto ACP without override", () => {
+  const config = {
+    agents: {
+      review: {
+        cli: "claude" as const,
+        execution: {
+          runtime: "acp" as const,
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(resolveAgentExecution(config, "review"), {
+    cli: "claude",
+    runtime: "acp",
+    runtimeAgentId: "codex",
+  });
 });

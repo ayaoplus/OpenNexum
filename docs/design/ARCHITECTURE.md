@@ -64,7 +64,7 @@ pending → running → generator_done → evaluating → done
 ```
 1. 编排者写 Contract YAML → 注册到 active-tasks.json
 2. nexum spawn <taskId> → 生成 prompt 文件（不提前标记 running）
-3. 编排者调用 sessions_spawn(promptFile) → ACP session 启动
+3. 编排者按 payload.runtime 派发（`acp` → sessions_spawn，`tmux` → PTY/tmux dispatcher）
 4. nexum track <taskId> <sessionKey> --role generator → 状态: running，记录 session + 发派发通知
 
 5. Generator 完成 → git commit + push → nexum callback --role generator
@@ -73,7 +73,7 @@ pending → running → generator_done → evaluating → done
    b. 发通知 [1/2] 代码编写完成
    c. 写 nexum/dispatch-queue.jsonl（兜底）
    d. POST /hooks/agent → 实时唤醒编排者
-   e. 编排者收到 webhook → nexum eval → sessions_spawn evaluator → nexum track --role evaluator → 状态: evaluating
+   e. 编排者收到 webhook → nexum eval → 按 payload.runtime 派发 evaluator → nexum track --role evaluator → 状态: evaluating
 
 6. Evaluator 完成 → 写 eval YAML → nexum callback --role evaluator
    ↓ callback 自动执行:
@@ -105,16 +105,16 @@ pending → running → generator_done → evaluating → done
 
 格式：`<model>-<role>-<number>`
 
-| Agent ID | CLI | 模型 | 用途 |
-|----------|-----|------|------|
-| codex-gen-01~03 | codex | gpt-5.4 (high) | 后端/API/逻辑代码 |
-| codex-frontend-01 | codex | gpt-5.4 (medium) | Admin/非用户端页面 |
-| codex-eval-01 | codex | gpt-5.4 (high) | Code review（review Claude 代码）|
-| codex-e2e-01 | codex | gpt-5.4 (medium) | E2E 测试 |
-| claude-gen-01~02 | claude | sonnet-4-6 | 用户端 WebUI |
-| claude-eval-01 | claude | sonnet-4-6 | Code review（review Codex 代码）|
-| claude-plan-01 | claude | opus-4-6 | 架构/计划 |
-| claude-write-01 | claude | sonnet-4-6 | 文档/creative |
+| Agent ID | CLI | 默认执行 backend | 模型 | 用途 |
+|----------|-----|------------------|------|------|
+| codex-gen-01~03 | codex | `acp/codex` | gpt-5.4 (high) | 后端/API/逻辑代码 |
+| codex-frontend-01 | codex | `acp/codex` | gpt-5.4 (medium) | Admin/非用户端页面 |
+| codex-eval-01 | codex | `acp/codex` | gpt-5.4 (high) | Code review（review Claude 代码）|
+| codex-e2e-01 | codex | `acp/codex` | gpt-5.4 (medium) | E2E 测试 |
+| claude-gen-01~02 | claude | `tmux/claude` | sonnet-4-6 | 用户端 WebUI |
+| claude-eval-01 | claude | `tmux/claude` | sonnet-4-6 | Code review（review Codex 代码）|
+| claude-plan-01 | claude | `tmux/claude` | opus-4-6 | 架构/计划 |
+| claude-write-01 | claude | `tmux/claude` | sonnet-4-6 | 文档/creative |
 
 **Cross-review 原则：** Codex 写 → Claude review；Claude 写 → Codex review
 
@@ -122,14 +122,23 @@ pending → running → generator_done → evaluating → done
 
 ---
 
-## 六、ACP Session 管理
+## 六、执行 Runtime 管理
 
 ### spawn 方式
-由**编排者（小明）**调用 OpenClaw `sessions_spawn` 工具派发：
+`nexum spawn` / `nexum eval` 输出的 payload 里，需要区分两层身份：
+
+- `agentId`: 逻辑 agent，用于路由、通知、评审归属
+- `runtime` + `runtimeAgentId`: 编排层真正调用的执行 backend
+
+默认策略：Codex logical agents → `acp/codex`；Claude logical agents → `tmux/claude`。除非显式覆写，不要把 Claude 当成 ACP backend。
+
+当 `runtime = "acp"` 时，由**编排者（小明）**调用 OpenClaw `sessions_spawn` 工具派发：
 ```
-sessions_spawn(promptFile, agentId, label, cwd, mode="run")
+sessions_spawn(promptFile, runtimeAgentId, label, cwd, mode="run")
 → 返回 childSessionKey
 ```
+
+当 `runtime = "tmux"` 时，改走 tmux / PTY dispatcher，`runtimeAgentId` 通常为 `claude`。
 
 `spawnAcpSession` 函数保留但为 no-op stub，不再调用 acpx CLI。
 
@@ -139,7 +148,7 @@ sessions_spawn(promptFile, agentId, label, cwd, mode="run")
 - 通知中显示格式：`codex-gen-01 (NEXUM-023)`，并行任务可区分
 
 ### session 并行
-- 每个任务独立 ACP session，互不干扰
+- 每个任务独立 runtime session，互不干扰
 - scope 文件不重叠时可安全并行
 - scope 有重叠时用 `depends_on` 串行化
 
@@ -181,8 +190,17 @@ sessions_spawn(promptFile, agentId, label, cwd, mode="run")
   "notify": { "target": "8449051145" },
   "watch": { "enabled": false, "intervalMin": 5, "timeoutMin": 30 },
   "agents": {
-    "codex-gen-01": { "cli": "codex", "model": "gpt-5.4", "reasoning": "high" },
-    "claude-gen-01": { "cli": "claude", "model": "claude-sonnet-4-6" },
+    "codex-gen-01": {
+      "cli": "codex",
+      "model": "gpt-5.4",
+      "reasoning": "high",
+      "execution": { "runtime": "acp", "agentId": "codex" }
+    },
+    "claude-gen-01": {
+      "cli": "claude",
+      "model": "claude-sonnet-4-6",
+      "execution": { "runtime": "tmux", "agentId": "claude" }
+    },
     ...
   },
   "routing": {

@@ -9,12 +9,13 @@ import {
   updateTask,
   TaskStatus,
   loadConfig,
-  resolveAgentCli,
+  resolveAgentExecution,
 } from '@nexum/core';
-import type { EvalVerdict, AgentCli, CriterionResult } from '@nexum/core';
+import type { EvalVerdict, AgentCli, AgentRuntime, CriterionResult } from '@nexum/core';
 import { renderRetryPrompt } from '@nexum/prompts';
 // Notifications are handled by callback.ts, not here
 import { archiveDoneTasks } from '../lib/archive.js';
+import { resolveContractAgents } from '../lib/resolve-contract-agents.js';
 
 export interface RetryPayload {
   action: 'retry';
@@ -22,6 +23,8 @@ export interface RetryPayload {
   taskName: string;
   agentId: string;
   agentCli: AgentCli;
+  runtime: AgentRuntime;
+  runtimeAgentId: string;
   promptFile: string;
   promptContent: string;
   label: string;
@@ -146,6 +149,8 @@ export async function runComplete(
     ? task.contract_path
     : path.join(projectDir, task.contract_path);
   const contract = await parseContract(contractAbsPath);
+  const config = await loadConfig(projectDir);
+  const resolvedContract = resolveContractAgents(contract, config);
 
   const iteration = task.iteration ?? 0;
 
@@ -163,8 +168,6 @@ export async function runComplete(
     normalizedVerdict === 'fail' && feedbackSimilarity > FEEDBACK_SIMILARITY_THRESHOLD;
   const shouldEscalateByLimit =
     normalizedVerdict === 'fail' && iteration >= contract.max_iterations;
-
-  const notifyTarget = (await loadConfig(projectDir).catch(() => ({ notify: undefined }))).notify?.target;
 
   // ── PASS ──
   if (normalizedVerdict === 'pass') {
@@ -212,7 +215,7 @@ export async function runComplete(
 
     const promptContent = renderRetryPrompt(
       {
-        contract,
+        contract: resolvedContract,
         task: { id: task.id, name: task.name },
         gitCommitCmd,
         evalResultPath: nextEvalResultPath,
@@ -238,18 +241,19 @@ export async function runComplete(
       acp_stream_log: undefined,
     });
 
-    const config = await loadConfig(projectDir);
-    const agentCli = resolveAgentCli(config, contract.generator);
-    const label = `nexum-${taskId.toLowerCase()}-${contract.generator}-retry-${nextIteration}`;
+    const execution = resolveAgentExecution(config, resolvedContract.generator);
+    const label = `nexum-${taskId.toLowerCase()}-${resolvedContract.generator}-retry-${nextIteration}`;
 
     // Fail/retry notification is sent by callback --role evaluator, not here
 
     const retryPayload: RetryPayload = {
       action: 'retry',
       taskId,
-      taskName: contract.name,
-      agentId: contract.generator,
-      agentCli,
+      taskName: resolvedContract.name,
+      agentId: resolvedContract.generator,
+      agentCli: execution.cli,
+      runtime: execution.runtime,
+      runtimeAgentId: execution.runtimeAgentId,
       promptFile,
       promptContent,
       label,

@@ -42,8 +42,8 @@ nexum init --project /path/to/project
 # 3. 注册任务到 active-tasks.json，然后生成 spawn payload
 nexum spawn TASK-001 --project /path/to/project
 
-# 4. 编排者（我）调用 sessions_spawn 派发给 codex/claude，
-#    成功后立刻记录 session
+# 4. 编排者读取 payload.runtime / payload.runtimeAgentId，
+#    按运行时派发（ACP 用 sessions_spawn，tmux 用 PTY/tmux dispatcher），成功后立刻记录 session
 nexum track TASK-001 <sessionKey> --project /path/to/project --role generator
 
 # 5. Agent 完成后调用
@@ -51,7 +51,7 @@ nexum callback TASK-001 --project /path/to/project \
   --model gpt-5.4 \
   --input-tokens 12345 \
   --output-tokens 2048
-# → 自动写 dispatch-queue + 触发 webhook → 编排者执行 nexum eval + sessions_spawn evaluator
+# → 自动写 dispatch-queue + 触发 webhook → 编排者执行 nexum eval + 派发 evaluator
 
 # 6. Evaluator 完成后同样调用 nexum callback --role evaluator
 # → 自动 complete/retry/escalate
@@ -100,13 +100,24 @@ depends_on: []
 
 格式：`<model>-<role>-<number>`
 
-| Agent ID | 用途 |
+| Agent ID | 默认执行 backend | 用途 |
 |---|---|
-| codex-gen-01~03 | 后端/API 代码 |
-| claude-gen-01~02 | 前端/文档 |
-| codex-eval-01 | 审 claude 的代码 |
-| claude-eval-01 | 审 codex 的代码 |
-| claude-plan-01 | 架构规划（opus）|
+| codex-gen-01~03 | `acp/codex` | 后端/API 代码 |
+| claude-gen-01~02 | `tmux/claude` | 前端/文档 |
+| codex-eval-01 | `acp/codex` | 审 claude 的代码 |
+| claude-eval-01 | `tmux/claude` | 审 codex 的代码 |
+| claude-plan-01 | `tmux/claude` | 架构规划（opus）|
+
+## Spawn Payload 约定
+
+`nexum spawn` / `nexum eval` / `retryPayload` 里的关键字段含义如下：
+
+- `agentId`: 逻辑 agent ID，用于路由、通知、评审归属
+- `agentCli`: 该逻辑 agent 对应的 CLI 家族（`codex` / `claude`）
+- `runtime`: 编排层应使用的执行 runtime（当前为 `acp` 或 `tmux`）
+- `runtimeAgentId`: 编排层真正传给 runtime 的 agent/backend ID
+
+对编排层来说，`sessions_spawn` 或其他执行器应使用 `runtime` + `runtimeAgentId`，不要把 `agentId` 直接当成底层 backend。
 
 ## Dispatch 架构
 
@@ -117,7 +128,7 @@ nexum callback → 写 dispatch-queue.jsonl（兜底）
     + POST /hooks/agent → 实时唤醒编排者
     ↓
 编排者（小明）收到通知
-    → nexum eval → sessions_spawn evaluator → nexum track --role evaluator
+    → nexum eval → 按 payload.runtime 派发 evaluator → nexum track --role evaluator
 
 evaluator 完成
     ↓
