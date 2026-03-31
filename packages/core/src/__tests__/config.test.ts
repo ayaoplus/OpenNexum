@@ -68,7 +68,7 @@ test("resolveAgentExecution defaults codex agents to ACP codex backend", () => {
   });
 });
 
-test("resolveAgentExecution defaults claude agents to tmux claude backend", () => {
+test("resolveAgentExecution defaults claude agents to acp main backend", () => {
   const config = {
     agents: {
       "claude-gen-01": { cli: "claude" as const },
@@ -77,8 +77,8 @@ test("resolveAgentExecution defaults claude agents to tmux claude backend", () =
 
   assert.deepEqual(resolveAgentExecution(config, "claude-gen-01"), {
     cli: "claude",
-    runtime: "tmux",
-    runtimeAgentId: "claude",
+    runtime: "acp",
+    runtimeAgentId: "main",
   });
 });
 
@@ -102,7 +102,7 @@ test("resolveAgentExecution honors explicit execution mapping", () => {
   });
 });
 
-test("resolveAgentExecution falls back to codex ACP backend when claude is forced onto ACP without override", () => {
+test("resolveAgentExecution defaults claude ACP backend to main when no agentId override", () => {
   const config = {
     agents: {
       review: {
@@ -117,6 +117,6 @@ test("resolveAgentExecution falls back to codex ACP backend when claude is force
   assert.deepEqual(resolveAgentExecution(config, "review"), {
     cli: "claude",
     runtime: "acp",
-    runtimeAgentId: "codex",
+    runtimeAgentId: "main",
   });
 });

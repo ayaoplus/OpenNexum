@@ -56,43 +56,23 @@
     },
     "claude-gen-01": {
       "cli": "claude",
-      "model": "sonnet-4-6",
-      "execution": {
-        "runtime": "tmux",
-        "agentId": "claude"
-      }
+      "model": "sonnet-4-6"
     },
     "claude-gen-02": {
       "cli": "claude",
-      "model": "sonnet-4-6",
-      "execution": {
-        "runtime": "tmux",
-        "agentId": "claude"
-      }
+      "model": "sonnet-4-6"
     },
     "claude-eval-01": {
       "cli": "claude",
-      "model": "sonnet-4-6",
-      "execution": {
-        "runtime": "tmux",
-        "agentId": "claude"
-      }
+      "model": "sonnet-4-6"
     },
     "claude-plan-01": {
       "cli": "claude",
-      "model": "opus-4-6",
-      "execution": {
-        "runtime": "tmux",
-        "agentId": "claude"
-      }
+      "model": "opus-4-6"
     },
     "claude-write-01": {
       "cli": "claude",
-      "model": "sonnet-4-6",
-      "execution": {
-        "runtime": "tmux",
-        "agentId": "claude"
-      }
+      "model": "sonnet-4-6"
     }
   },
   "notify": {

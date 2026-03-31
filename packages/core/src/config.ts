@@ -98,13 +98,13 @@ export function resolveAgentExecution(
   return { cli, runtime, runtimeAgentId };
 }
 
-function defaultRuntimeForCli(cli: AgentCli): AgentRuntime {
-  return cli === "claude" ? "tmux" : "acp";
+function defaultRuntimeForCli(_cli: AgentCli): AgentRuntime {
+  return "acp";
 }
 
 function defaultRuntimeAgentId(runtime: AgentRuntime, cli: AgentCli): string {
   if (runtime === "acp") {
-    return cli === "claude" ? "codex" : cli;
+    return cli === "claude" ? "main" : cli;
   }
 
   return cli;
