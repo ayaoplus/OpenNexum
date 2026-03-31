@@ -318,7 +318,7 @@ test('runComplete resolves auto-routed retry payload to the same logical agent f
           'claude-gen-01': {
             cli: 'claude',
             execution: {
-              runtime: 'tmux',
+              runtime: 'acp',
               agentId: 'claude',
             },
           },
@@ -336,7 +336,7 @@ test('runComplete resolves auto-routed retry payload to the same logical agent f
   assert.equal(result.action, 'retry');
   assert.equal(result.retryPayload?.agentId, 'claude-gen-01');
   assert.equal(result.retryPayload?.agentCli, 'claude');
-  assert.equal(result.retryPayload?.runtime, 'tmux');
+  assert.equal(result.retryPayload?.runtime, 'acp');
   assert.equal(result.retryPayload?.runtimeAgentId, 'claude');
 });
 
@@ -400,7 +400,7 @@ test('runSpawnEval resolves evaluator execution target from config', async () =>
   delete testingGlobals.__nexumCliSendMessage;
 });
 
-test('runEval delegates to evaluator payload generation and preserves claude tmux defaults', async () => {
+test('runEval delegates to evaluator payload generation and preserves claude acp defaults', async () => {
   const taskId = 'TEST-CLAUDE';
   const contract = CONTRACT_YAML
     .replace(/^id: TEST-001$/m, `id: ${taskId}`)
@@ -443,7 +443,7 @@ test('runEval delegates to evaluator payload generation and preserves claude tmu
 
   assert.equal(payload.agentId, 'claude-eval-01');
   assert.equal(payload.agentCli, 'claude');
-  assert.equal(payload.runtime, 'tmux');
+  assert.equal(payload.runtime, 'acp');
   assert.equal(payload.runtimeAgentId, 'claude');
   assert.ok(payload.promptContent.includes(taskId));
 });

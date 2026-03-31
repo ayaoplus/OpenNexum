@@ -68,7 +68,7 @@ test("resolveAgentExecution defaults codex agents to ACP codex backend", () => {
   });
 });
 
-test("resolveAgentExecution defaults claude agents to acp main backend", () => {
+test("resolveAgentExecution defaults claude agents to acp claude backend", () => {
   const config = {
     agents: {
       "claude-gen-01": { cli: "claude" as const },
@@ -78,7 +78,7 @@ test("resolveAgentExecution defaults claude agents to acp main backend", () => {
   assert.deepEqual(resolveAgentExecution(config, "claude-gen-01"), {
     cli: "claude",
     runtime: "acp",
-    runtimeAgentId: "main",
+    runtimeAgentId: "claude",
   });
 });
 
@@ -102,7 +102,7 @@ test("resolveAgentExecution honors explicit execution mapping", () => {
   });
 });
 
-test("resolveAgentExecution defaults claude ACP backend to main when no agentId override", () => {
+test("resolveAgentExecution defaults claude ACP backend to claude when no agentId override", () => {
   const config = {
     agents: {
       review: {
@@ -117,6 +117,6 @@ test("resolveAgentExecution defaults claude ACP backend to main when no agentId 
   assert.deepEqual(resolveAgentExecution(config, "review"), {
     cli: "claude",
     runtime: "acp",
-    runtimeAgentId: "main",
+    runtimeAgentId: "claude",
   });
 });

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 export type AgentCli = "codex" | "claude";
-export type AgentRuntime = "acp" | "tmux";
+export type AgentRuntime = "acp";
 
 export interface AgentExecutionConfig {
   runtime?: AgentRuntime;
@@ -92,21 +92,17 @@ export function resolveAgentExecution(
 ): ResolvedAgentExecution {
   const cli = resolveAgentCli(config, logicalAgentId);
   const execution = config.agents?.[logicalAgentId]?.execution;
-  const runtime = execution?.runtime ?? defaultRuntimeForCli(cli);
+  const runtime = normalizeRuntime(execution?.runtime);
   const runtimeAgentId = execution?.agentId ?? defaultRuntimeAgentId(runtime, cli);
 
   return { cli, runtime, runtimeAgentId };
 }
 
-function defaultRuntimeForCli(_cli: AgentCli): AgentRuntime {
+function normalizeRuntime(_runtime: AgentExecutionConfig["runtime"]): AgentRuntime {
   return "acp";
 }
 
-function defaultRuntimeAgentId(runtime: AgentRuntime, cli: AgentCli): string {
-  if (runtime === "acp") {
-    return cli === "claude" ? "main" : cli;
-  }
-
+function defaultRuntimeAgentId(_runtime: AgentRuntime, cli: AgentCli): string {
   return cli;
 }
 

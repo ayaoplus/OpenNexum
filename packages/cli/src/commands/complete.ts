@@ -314,7 +314,6 @@ export async function runRetry(
     completed_at: undefined,
     acp_session_key: undefined,
     acp_stream_log: undefined,
-    eval_tmux_session: undefined,
   });
 
   return { ok: true, taskId, status: TaskStatus.Pending };

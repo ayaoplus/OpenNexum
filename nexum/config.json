@@ -56,23 +56,43 @@
     },
     "claude-gen-01": {
       "cli": "claude",
-      "model": "sonnet-4-6"
+      "model": "sonnet-4-6",
+      "execution": {
+        "runtime": "acp",
+        "agentId": "claude"
+      }
     },
     "claude-gen-02": {
       "cli": "claude",
-      "model": "sonnet-4-6"
+      "model": "sonnet-4-6",
+      "execution": {
+        "runtime": "acp",
+        "agentId": "claude"
+      }
     },
     "claude-eval-01": {
       "cli": "claude",
-      "model": "sonnet-4-6"
+      "model": "sonnet-4-6",
+      "execution": {
+        "runtime": "acp",
+        "agentId": "claude"
+      }
     },
     "claude-plan-01": {
       "cli": "claude",
-      "model": "opus-4-6"
+      "model": "opus-4-6",
+      "execution": {
+        "runtime": "acp",
+        "agentId": "claude"
+      }
     },
     "claude-write-01": {
       "cli": "claude",
-      "model": "sonnet-4-6"
+      "model": "sonnet-4-6",
+      "execution": {
+        "runtime": "acp",
+        "agentId": "claude"
+      }
     }
   },
   "notify": {

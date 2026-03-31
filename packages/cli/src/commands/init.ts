@@ -331,15 +331,10 @@ function buildInitAgent(cli: "codex" | "claude", model: string, reasoning?: stri
     cli,
     model,
     ...(reasoning ? { reasoning } : {}),
-    execution: cli === "claude"
-      ? {
-          runtime: "tmux",
-          agentId: "claude",
-        }
-      : {
-          runtime: "acp",
-          agentId: "codex",
-        },
+    execution: {
+      runtime: "acp",
+      agentId: cli,
+    },
   };
 }
 
