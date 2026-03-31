@@ -5,11 +5,14 @@ import {
   readTasks,
   TaskStatus,
   parseContract,
+  getHeadCommit,
 } from '@nexum/core';
 import { formatDispatch, sendMessage } from '@nexum/notify';
-import type { DispatchOptions } from '@nexum/notify';
 import { loadConfig } from '@nexum/core';
 import path from 'node:path';
+import { acknowledgeDispatchEntries } from '../lib/dispatch-queue.js';
+
+type TrackRole = 'generator' | 'evaluator';
 
 /**
  * track: called by the orchestrator (AI agent) after sessions_spawn succeeds.
@@ -20,17 +23,40 @@ export async function runTrack(
   taskId: string,
   sessionKey: string,
   projectDir: string,
-  streamLogPath?: string
+  streamLogPath?: string,
+  role?: TrackRole
 ): Promise<void> {
   const task = await getTask(projectDir, taskId);
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
   }
 
+  const trackedRole = role ?? inferTrackRole(task.status);
+  const now = new Date().toISOString();
+  const baseCommit =
+    trackedRole === 'generator' && !task.base_commit
+      ? await getHeadCommit(projectDir).catch(() => '')
+      : task.base_commit ?? '';
+
   await updateTask(projectDir, taskId, {
+    status: trackedRole === 'generator' ? TaskStatus.Running : TaskStatus.Evaluating,
     acp_session_key: sessionKey,
     ...(streamLogPath ? { acp_stream_log: streamLogPath } : {}),
-    updated_at: new Date().toISOString(),
+    ...(trackedRole === 'generator' ? { started_at: task.started_at ?? now } : {}),
+    ...(baseCommit ? { base_commit: baseCommit } : {}),
+    updated_at: now,
+  });
+
+  await acknowledgeDispatchEntries(projectDir, (entry) => {
+    if (entry.taskId !== taskId) {
+      return false;
+    }
+
+    if (trackedRole === 'evaluator') {
+      return entry.action === 'spawn-evaluator';
+    }
+
+    return entry.action === 'spawn-retry' || entry.action === 'spawn-next';
   });
 
   // Send dispatch notification
@@ -47,12 +73,15 @@ export async function runTrack(
       const progress = `${doneCount}/${tasks.length}`;
 
       const config = await loadConfig(projectDir);
-      const generatorId = contract.agent?.generator ?? contract.generator;
-      const agentConfig = config.agents?.[generatorId];
+      const trackedAgentId =
+        trackedRole === 'evaluator'
+          ? contract.agent?.evaluator ?? contract.evaluator
+          : contract.agent?.generator ?? contract.generator;
+      const agentConfig = config.agents?.[trackedAgentId];
       const msg = formatDispatch({
         taskId,
         taskName: contract.name,
-        agent: `${generatorId} (${taskId})`,
+        agent: `${trackedAgentId} (${taskId})`,
         model: agentConfig?.model,
         scopeCount: contract.scope.files.length,
         deliverablesCount: contract.deliverables.length,
@@ -72,13 +101,24 @@ export function registerTrack(program: Command): void {
     .command('track <taskId> <sessionKey>')
     .description('Record ACP session key for a running task (called by orchestrator after spawn)')
     .option('--project <dir>', 'Project directory', process.cwd())
+    .option('--role <role>', 'generator | evaluator')
     .option('--stream-log <path>', 'Path to ACP stream log file (from sessions_spawn streamLogPath)')
-    .action(async (taskId: string, sessionKey: string, options: { project: string; streamLog?: string }) => {
+    .action(async (
+      taskId: string,
+      sessionKey: string,
+      options: { project: string; streamLog?: string; role?: TrackRole }
+    ) => {
       try {
-        await runTrack(taskId, sessionKey, options.project, options.streamLog);
+        await runTrack(taskId, sessionKey, options.project, options.streamLog, options.role);
       } catch (err) {
         console.error('track failed:', err instanceof Error ? err.message : err);
         process.exit(1);
       }
     });
+}
+
+function inferTrackRole(status: TaskStatus): TrackRole {
+  return status === TaskStatus.GeneratorDone || status === TaskStatus.Evaluating
+    ? 'evaluator'
+    : 'generator';
 }

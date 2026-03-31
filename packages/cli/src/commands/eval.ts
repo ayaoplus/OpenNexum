@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { parseContract, getTask, updateTask, TaskStatus, loadConfig, resolveAgentCli } from '@nexum/core';
+import { parseContract, getTask, updateTask, loadConfig, resolveAgentCli } from '@nexum/core';
 import { renderEvaluatorPrompt } from '@nexum/prompts';
 import type { SpawnPayload } from './spawn.js';
 
@@ -61,7 +61,6 @@ export async function runEval(taskId: string, projectDir: string): Promise<Spawn
   await writeFile(promptFile, promptContent, 'utf8');
 
   await updateTask(projectDir, taskId, {
-    status: TaskStatus.Evaluating,
     eval_result_path: evalResultPath,
   });
 

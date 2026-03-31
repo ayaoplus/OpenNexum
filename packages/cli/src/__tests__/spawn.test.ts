@@ -54,7 +54,7 @@ async function setupProject(
   return projectDir;
 }
 
-// ─── C2: spawn prepares payload from contract and marks task running ───
+// ─── C2: spawn prepares payload without faking a running session ───
 
 test('runSpawn reads contract and returns generator payload with correct agentId', async () => {
   const taskId = 'TEST-001';
@@ -85,15 +85,81 @@ test('runSpawn reads contract and returns generator payload with correct agentId
     'prompt file should contain task name'
   );
 
-  // Verify task was marked running
+  // Verify task status is unchanged until orchestrator tracks a real session
   const tasksRaw = JSON.parse(
     await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
   ) as { tasks: Array<{ id: string; started_at?: string; status?: string }> };
   const updatedTask = tasksRaw.tasks.find((t) => t.id === taskId);
-  assert.equal(updatedTask?.status, 'running');
-  assert.ok(updatedTask?.started_at);
+  assert.equal(updatedTask?.status, 'pending');
+  assert.equal(updatedTask?.started_at, undefined);
 
   delete testingGlobals.__nexumCliSendMessage;
+});
+
+test('runTrack marks generator sessions as running and evaluator sessions as evaluating', async () => {
+  const taskId = 'TEST-001';
+  const projectDir = await setupProject([
+    {
+      id: taskId,
+      name: 'Test Task',
+      status: 'pending',
+      contract_path: `docs/nexum/contracts/${taskId}.yaml`,
+      depends_on: [],
+      iteration: 0,
+    },
+  ]);
+
+  const { runTrack } = await import(`../commands/track.ts?track=${Date.now()}`);
+
+  await runTrack(taskId, 'session-gen', projectDir, '/tmp/gen.log', 'generator');
+
+  let tasksRaw = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string; started_at?: string }> };
+  let trackedTask = tasksRaw.tasks.find((t) => t.id === taskId);
+  assert.equal(trackedTask?.status, 'running');
+  assert.ok(trackedTask?.started_at);
+
+  await writeFile(
+    path.join(projectDir, 'nexum', 'dispatch-queue.jsonl'),
+    `${JSON.stringify({
+      taskId,
+      action: 'spawn-evaluator',
+      role: 'evaluator',
+      projectDir,
+      sessionName: 'claude-eval-01',
+      createdAt: new Date().toISOString(),
+    })}\n`,
+    'utf8'
+  );
+  await writeFile(
+    path.join(projectDir, 'nexum', 'active-tasks.json'),
+    JSON.stringify(
+      {
+        tasks: [
+          {
+            ...tasksRaw.tasks[0],
+            status: 'generator_done',
+            eval_result_path: 'nexum/runtime/eval/TEST-001-iter-0.yaml',
+          },
+        ],
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+
+  await runTrack(taskId, 'session-eval', projectDir, '/tmp/eval.log', 'evaluator');
+
+  tasksRaw = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string }> };
+  trackedTask = tasksRaw.tasks.find((t) => t.id === taskId);
+  assert.equal(trackedTask?.status, 'evaluating');
+
+  const queueContents = await readFile(path.join(projectDir, 'nexum', 'dispatch-queue.jsonl'), 'utf8');
+  assert.equal(queueContents.trim(), '');
 });
 
 // ─── C3: complete pass updates task to done and unlocks downstream tasks ───
@@ -170,7 +236,7 @@ test('runComplete with fail and iteration < max_iterations returns retry payload
   ) as { tasks: Array<{ id: string; status: string; iteration?: number }> };
 
   const retried = tasksRaw.tasks.find((t) => t.id === taskId);
-  assert.equal(retried?.status, 'running', 'task should be running after retry');
+  assert.equal(retried?.status, 'pending', 'task should return to pending until a new session is tracked');
   assert.equal(retried?.iteration, 1, 'iteration should be incremented to 1');
 
   delete testingGlobals.__nexumCliSendMessage;
@@ -248,6 +314,15 @@ test('runSpawnEval resolves evaluator agentCli from config (eval→codex)', asyn
 
   assert.equal(payload.agentCli, 'codex', 'agentCli should be codex per config');
   assert.equal(payload.agentId, 'eval', 'agentId should be contract.evaluator');
+  const tasksRaw = JSON.parse(
+    await readFile(path.join(projectDir, 'nexum', 'active-tasks.json'), 'utf8')
+  ) as { tasks: Array<{ id: string; status: string; eval_result_path?: string }> };
+  const updatedTask = tasksRaw.tasks.find((t) => t.id === taskId);
+  assert.equal(updatedTask?.status, 'running');
+  assert.equal(
+    updatedTask?.eval_result_path,
+    path.join(projectDir, 'nexum', 'runtime', 'eval', `${taskId}-iter-0.yaml`)
+  );
 
   delete testingGlobals.__nexumCliSendMessage;
 });

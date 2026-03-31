@@ -1,15 +1,24 @@
 export interface ContractCriteria {
   id: string;
   desc: string;
-  method: string;
-  threshold: string;
+  method?: string;
+  threshold?: string;
+  weight?: number;
+}
+
+export interface ContractDeliverable {
+  path?: string;
+  description: string;
 }
 
 export interface ContractScope {
   files: string[];
+  boundaries?: string[];
+  conflicts_with?: string[];
 }
 
 export interface ContractEvalStrategy {
+  type?: string;
   criteria: ContractCriteria[];
 }
 
@@ -18,8 +27,12 @@ export interface Contract {
   name: string;
   type: 'coding' | 'task' | 'creative' | string;
   scope: ContractScope;
-  deliverables: string[];
+  deliverables: ContractDeliverable[];
   eval_strategy: ContractEvalStrategy;
+  generator?: string;
+  evaluator?: string;
+  batch?: string;
+  description?: string;
 }
 
 export interface Task {

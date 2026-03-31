@@ -10,7 +10,7 @@ OpenNexum 通过 Contract YAML 定义任务边界，自动编排 generator（写
 - **Cross-review**：Codex 写的由 Claude 审，Claude 写的由 Codex 审
 - **事件驱动编排**：callback 触发 eval → retry → unlock → next-task，全自动
 - **Webhook dispatch**：通过 OpenClaw `/hooks/agent` 实时唤醒编排者，dispatch-queue 兜底
-- **Dispatch Queue 兜底**：callback 写 `nexum/dispatch-queue.jsonl`，心跳 10 分钟扫描保证不丢
+- **Dispatch Queue 兜底**：callback 写 `nexum/dispatch-queue.jsonl`，watch 心跳重放 webhook，避免丢失唤醒信号
 - **自动路由**：`generator: auto` 按任务类型自动选择最优 Agent
 - **并行执行**：独立 ACP session，多任务同时运行
 - **Escalation**：超过重试上限或 feedback 重复时自动升级，通知人工介入
@@ -42,14 +42,16 @@ nexum init --project /path/to/project
 # 3. 注册任务到 active-tasks.json，然后生成 spawn payload
 nexum spawn TASK-001 --project /path/to/project
 
-# 4. 编排者（我）调用 sessions_spawn 派发给 codex/claude
+# 4. 编排者（我）调用 sessions_spawn 派发给 codex/claude，
+#    成功后立刻记录 session
+nexum track TASK-001 <sessionKey> --project /path/to/project --role generator
 
 # 5. Agent 完成后调用
 nexum callback TASK-001 --project /path/to/project \
   --model gpt-5.4 \
   --input-tokens 12345 \
   --output-tokens 2048
-# → 自动写 dispatch-queue + 触发 webhook → 编排者 spawn evaluator
+# → 自动写 dispatch-queue + 触发 webhook → 编排者执行 nexum eval + sessions_spawn evaluator
 
 # 6. Evaluator 完成后同样调用 nexum callback --role evaluator
 # → 自动 complete/retry/escalate
@@ -60,16 +62,20 @@ nexum callback TASK-001 --project /path/to/project \
 ```yaml
 id: TASK-001
 name: "implement feature X"
+type: coding
+created_at: "2026-03-31T00:00:00Z"
 batch: batch-1
 
 agent:
-  generator: codex-gen-01
-  evaluator: claude-eval-01
+  generator: auto
+  evaluator: auto
 
 scope:
   files:
     - src/feature.ts
     - src/feature.test.ts
+  boundaries: []
+  conflicts_with: []
 
 description: "..."
 
@@ -85,7 +91,10 @@ eval_strategy:
       weight: 2
 
 max_iterations: 3
+depends_on: []
 ```
+
+`deliverables` 支持对象格式（推荐）和旧的字符串数组格式；criteria 至少需要 `id` + `desc`，可选 `method` / `threshold` / `weight`。
 
 ## Agent 命名规范
 
@@ -108,7 +117,7 @@ nexum callback → 写 dispatch-queue.jsonl（兜底）
     + POST /hooks/agent → 实时唤醒编排者
     ↓
 编排者（小明）收到通知
-    → nexum eval → sessions_spawn evaluator
+    → nexum eval → sessions_spawn evaluator → nexum track --role evaluator
 
 evaluator 完成
     ↓
@@ -117,7 +126,7 @@ nexum callback --role evaluator → 写 dispatch-queue.jsonl
     ↓
 编排者处理 complete/retry/escalate
 
-[兜底] 10 分钟心跳扫描 dispatch-queue.jsonl → 未处理的自动执行
+[兜底] watch 心跳扫描 dispatch-queue.jsonl → 重放 webhook，重新唤醒编排者
 ```
 
 ## CLI 命令
@@ -125,13 +134,14 @@ nexum callback --role evaluator → 写 dispatch-queue.jsonl
 ```bash
 nexum init [--project <dir>] [--yes]       # 初始化项目
 nexum spawn <taskId> [--project <dir>]     # 生成 spawn payload
-nexum track <taskId> <sessionKey>          # 记录 ACP session
+nexum track <taskId> <sessionKey> [--role evaluator]  # 记录 ACP session
 nexum callback <taskId> [--role evaluator] # 任务完成回调
 nexum eval <taskId>                        # 生成 evaluator payload
 nexum complete <taskId> <pass|fail|escalated>  # 处理 eval 结果
 nexum status [--project <dir>]             # 显示任务进度（按 batch）
 nexum archive [--project <dir>]            # 归档 done 任务
 nexum health [--project <dir>]             # 卡死检测
+nexum watch [--interval <min>]             # dispatch heartbeat + health daemon
 nexum ls [--project <dir>]                 # 任务列表
 nexum retry <taskId> --force               # 重置 escalated 任务
 nexum watch install|status|list            # Watch 守护进程管理

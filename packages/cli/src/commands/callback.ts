@@ -1,5 +1,4 @@
 import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -28,11 +27,10 @@ import {
   sendMessage,
 } from '@nexum/notify';
 import { runComplete } from './complete.js';
-import { runSpawn, runSpawnEval } from './spawn.js';
+import { enqueueDispatchEntry } from '../lib/dispatch-queue.js';
+import { dispatchAgentWebhook } from '../lib/webhook.js';
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_WEBHOOK_GATEWAY_URL = 'http://127.0.0.1:18789';
-const WEBHOOK_AGENT_PATH = 'hooks/agent';
 const SESSION_COUNTER_FILENAME = 'session-counter.json';
 const SESSION_COUNTER_LOCK_SUFFIX = '.lock';
 
@@ -46,7 +44,6 @@ interface CallbackOptions {
   role?: 'generator' | 'evaluator';
 }
 
-type DispatchRole = 'generator' | 'evaluator';
 type SessionRole = 'gen' | 'eval';
 type ContractWithAgentCompat = {
   generator: string;
@@ -96,149 +93,6 @@ async function getLastCommitMessage(projectDir: string): Promise<string> {
   } catch {
     return '';
   }
-}
-
-async function dispatchViaWebhook(
-  taskId: string,
-  role: DispatchRole,
-  projectDir: string,
-  sessionName: string
-): Promise<boolean> {
-  try {
-    const config = await loadConfig(projectDir).catch(() => ({ webhook: undefined } as NexumConfig));
-    const token = await resolveWebhookToken(config);
-
-    if (!token) {
-      console.warn(`[callback] webhook dispatch skipped for ${taskId}: no hooks token configured`);
-      return false;
-    }
-
-    const endpoint = resolveWebhookAgentEndpoint(config);
-    const payload = {
-      message: `nexum-dispatch: ${taskId} ${role} ${projectDir}`,
-      name: 'Nexum',
-      agentId: 'main',
-      deliver: false,
-      sessionName,
-    };
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const details = summarizeResponse(await response.text().catch(() => ''));
-      console.warn(
-        `[callback] webhook dispatch failed for ${taskId}: ${response.status} ${response.statusText}${details ? ` - ${details}` : ''}`
-      );
-      return false;
-    }
-
-    console.log(`[callback] webhook payload for ${taskId} includes sessionName=${sessionName}`);
-    return true;
-  } catch (err) {
-    console.warn(`[callback] webhook dispatch failed for ${taskId}: ${err instanceof Error ? err.message : err}`);
-    return false;
-  }
-}
-
-// ─── Dispatch Queue (heartbeat fallback) ─────────────────────────────────────
-
-type DispatchAction = 'spawn-evaluator' | 'spawn-retry' | 'spawn-next';
-
-interface DispatchQueueEntry {
-  taskId: string;
-  action: DispatchAction;
-  projectDir: string;
-  createdAt: string;
-}
-
-async function writeDispatchQueue(taskId: string, action: DispatchAction, projectDir: string): Promise<void> {
-  try {
-    const queuePath = path.join(projectDir, 'nexum', 'dispatch-queue.jsonl');
-    const existingContents = await readFile(queuePath, 'utf8').catch((err: NodeJS.ErrnoException) => {
-      if (err.code === 'ENOENT') {
-        return '';
-      }
-      throw err;
-    });
-    const existingLines = existingContents
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    const existingEntries = existingLines.map(
-      (line) => JSON.parse(line) as DispatchQueueEntry
-    );
-
-    if (existingEntries.some((entry) => entry.taskId === taskId && entry.action === action)) {
-      console.warn(`[callback] dispatch queue entry already exists for ${taskId} (${action}), skipping append`);
-      return;
-    }
-
-    const entry: DispatchQueueEntry = {
-      taskId,
-      action,
-      projectDir,
-      createdAt: new Date().toISOString(),
-    };
-    existingLines.push(JSON.stringify(entry));
-    await writeFile(queuePath, `${existingLines.join('\n')}\n`, 'utf8');
-  } catch (err) {
-    console.warn(`[callback] failed to write dispatch queue: ${err instanceof Error ? err.message : err}`);
-  }
-}
-
-// ─── Webhook Token Resolution ────────────────────────────────────────────────
-
-export async function resolveWebhookToken(config: Pick<NexumConfig, 'webhook'>): Promise<string | undefined> {
-  const envToken = process.env.OPENCLAW_HOOKS_TOKEN?.trim();
-  if (envToken) {
-    return envToken;
-  }
-
-  const configToken = config.webhook?.token?.trim();
-  if (configToken) {
-    return configToken;
-  }
-
-  return readOpenClawHooksToken();
-}
-
-async function readOpenClawHooksToken(): Promise<string | undefined> {
-  const openClawConfigPath = path.join(homedir(), '.openclaw', 'openclaw.json');
-
-  try {
-    const contents = await readFile(openClawConfigPath, 'utf8');
-    const parsed = JSON.parse(contents) as { hooks?: { token?: unknown } };
-    const token = parsed.hooks?.token;
-    return typeof token === 'string' && token.trim() ? token.trim() : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function resolveWebhookAgentEndpoint(config: Pick<NexumConfig, 'webhook'>): string {
-  return new URL(
-    WEBHOOK_AGENT_PATH,
-    withTrailingSlash(config.webhook?.gatewayUrl?.trim() || DEFAULT_WEBHOOK_GATEWAY_URL)
-  ).toString();
-}
-
-function withTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url : `${url}/`;
-}
-
-export function summarizeResponse(body: string): string {
-  const normalized = body.trim().replace(/\s+/g, ' ');
-  if (!normalized) {
-    return '';
-  }
-  return normalized.length > 200 ? `${normalized.slice(0, 197)}...` : normalized;
 }
 
 function getGeneratorAgentId(contract: ContractWithAgentCompat): string {
@@ -366,11 +220,16 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   }
 
   // ── Step 3: Auto-dispatch evaluator ──
-  await writeDispatchQueue(taskId, 'spawn-evaluator', projectDir);
   try {
     const sessionName = await getNextSessionName('eval', projectDir);
-    await runSpawnEval(taskId, projectDir);
-    const dispatched = await dispatchViaWebhook(taskId, 'evaluator', projectDir, sessionName);
+    await enqueueDispatchEntry(projectDir, {
+      taskId,
+      action: 'spawn-evaluator',
+      role: 'evaluator',
+      projectDir,
+      sessionName,
+    });
+    const dispatched = await dispatchAgentWebhook(taskId, 'evaluator', projectDir, sessionName);
     if (dispatched) {
       console.log(`[callback] auto-dispatched evaluator for ${taskId} via webhook`);
     }
@@ -483,10 +342,16 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
 
   // ── Step 4: Auto-dispatch next step ──
   if (result.action === 'retry' && result.retryPayload) {
-    await writeDispatchQueue(taskId, 'spawn-retry', projectDir);
     try {
       const sessionName = await getNextSessionName('gen', projectDir);
-      const dispatched = await dispatchViaWebhook(taskId, 'generator', projectDir, sessionName);
+      await enqueueDispatchEntry(projectDir, {
+        taskId,
+        action: 'spawn-retry',
+        role: 'generator',
+        projectDir,
+        sessionName,
+      });
+      const dispatched = await dispatchAgentWebhook(taskId, 'generator', projectDir, sessionName);
       if (dispatched) {
         console.log(`[callback] auto-dispatched retry generator for ${taskId} via webhook`);
       }
@@ -512,11 +377,16 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
     const task = tasks.find((t) => t.id === id && t.status === TaskStatus.Pending);
     if (!task) continue;
 
-    await writeDispatchQueue(id, 'spawn-next', projectDir);
     try {
       const sessionName = await getNextSessionName('gen', projectDir);
-      await runSpawn(id, projectDir);
-      const dispatched = await dispatchViaWebhook(id, 'generator', projectDir, sessionName);
+      await enqueueDispatchEntry(projectDir, {
+        taskId: id,
+        action: 'spawn-next',
+        role: 'generator',
+        projectDir,
+        sessionName,
+      });
+      const dispatched = await dispatchAgentWebhook(id, 'generator', projectDir, sessionName);
       if (dispatched) {
         console.log(`[callback] auto-dispatched next generator for ${id} via webhook`);
       }

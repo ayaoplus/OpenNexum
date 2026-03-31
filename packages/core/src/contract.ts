@@ -3,6 +3,7 @@ import { load as loadYaml } from "js-yaml";
 
 import type {
   Contract,
+  ContractDeliverable,
   ContractCriterion,
   ContractEvalStrategy,
   ContractScope,
@@ -28,18 +29,21 @@ const CONTRACT_TYPES = new Set<ContractType>(["coding", "task", "creative"]);
 const EVAL_STRATEGY_TYPES = new Set<EvalStrategyType>([
   "unit",
   "integration",
-  "review"
+  "review",
+  "e2e",
+  "composite"
 ]);
 
 export async function parseContract(filePath: string): Promise<Contract> {
   const source = await readFile(filePath, "utf8");
   const parsed = loadYaml(source);
 
-  if (!isPlainObject(parsed)) {
-    throw new Error(`Contract root must be an object: ${filePath}`);
+  const errors = validateContract(parsed);
+  if (errors.length > 0) {
+    throw new Error(`Invalid contract ${filePath}:\n- ${errors.join("\n- ")}`);
   }
 
-  return parsed as unknown as Contract;
+  return normalizeContract(parsed as Record<string, unknown>);
 }
 
 export async function parseEvalResult(filePath: string): Promise<EvalSummary> {
@@ -86,16 +90,44 @@ export async function parseEvalResult(filePath: string): Promise<EvalSummary> {
   }
 }
 
-export function validateContract(contract: Contract): string[] {
+export function validateContract(contract: unknown): string[] {
   const errors: string[] = [];
-  const record = contract as unknown as Record<string, unknown>;
+  if (!isPlainObject(contract)) {
+    return ["Contract root must be an object"];
+  }
+
+  const record = contract;
 
   requireString(record.id, "id", errors);
   requireString(record.name, "name", errors);
-  requireEnum(record.type, "type", CONTRACT_TYPES, errors);
-  requireString(record.created_at, "created_at", errors);
-  requireString(record.generator, "generator", errors);
-  requireString(record.evaluator, "evaluator", errors);
+
+  if (record.type !== undefined) {
+    requireEnum(record.type, "type", CONTRACT_TYPES, errors);
+  }
+
+  if (record.created_at !== undefined) {
+    requireString(record.created_at, "created_at", errors);
+  }
+
+  if (record.batch !== undefined) {
+    requireString(record.batch, "batch", errors);
+  }
+
+  if (record.description !== undefined) {
+    requireString(record.description, "description", errors);
+  }
+
+  const agent = isPlainObject(record.agent) ? record.agent : undefined;
+  const generator = firstNonEmptyString(record.generator, agent?.generator);
+  const evaluator = firstNonEmptyString(record.evaluator, agent?.evaluator);
+
+  if (!generator) {
+    errors.push("Missing or invalid field: generator|agent.generator");
+  }
+
+  if (!evaluator) {
+    errors.push("Missing or invalid field: evaluator|agent.evaluator");
+  }
 
   if (typeof record.max_iterations !== "number") {
     errors.push("Missing or invalid field: max_iterations");
@@ -106,12 +138,53 @@ export function validateContract(contract: Contract): string[] {
     errors.push("Missing or invalid field: scope");
   } else {
     requireStringArray(scope.files, "scope.files", errors);
-    requireStringArray(scope.boundaries, "scope.boundaries", errors);
-    requireStringArray(scope.conflicts_with, "scope.conflicts_with", errors);
+    if (scope.boundaries !== undefined) {
+      requireStringArray(scope.boundaries, "scope.boundaries", errors);
+    }
+    if (scope.conflicts_with !== undefined) {
+      requireStringArray(scope.conflicts_with, "scope.conflicts_with", errors);
+    }
   }
 
-  requireStringArray(record.deliverables, "deliverables", errors);
-  requireStringArray(record.depends_on, "depends_on", errors);
+  if (!Array.isArray(record.deliverables)) {
+    errors.push("Missing or invalid field: deliverables");
+  } else {
+    record.deliverables.forEach((deliverable, index) => {
+      if (typeof deliverable === "string") {
+        if (deliverable.trim() === "") {
+          errors.push(`Missing or invalid field: deliverables[${index}]`);
+        }
+        return;
+      }
+
+      if (!isPlainObject(deliverable)) {
+        errors.push(`Invalid deliverable at deliverables[${index}]`);
+        return;
+      }
+
+      const hasDescription =
+        typeof deliverable.description === "string" && deliverable.description.trim() !== "";
+      const hasPath = typeof deliverable.path === "string" && deliverable.path.trim() !== "";
+
+      if (!hasDescription && !hasPath) {
+        errors.push(
+          `Missing or invalid field: deliverables[${index}].description|deliverables[${index}].path`
+        );
+      }
+
+      if (deliverable.path !== undefined) {
+        requireString(deliverable.path, `deliverables[${index}].path`, errors);
+      }
+
+      if (deliverable.description !== undefined) {
+        requireString(deliverable.description, `deliverables[${index}].description`, errors);
+      }
+    });
+  }
+
+  if (record.depends_on !== undefined) {
+    requireStringArray(record.depends_on, "depends_on", errors);
+  }
 
   const evalStrategy = record.eval_strategy;
   if (!isPlainObject(evalStrategy)) {
@@ -130,13 +203,111 @@ export function validateContract(contract: Contract): string[] {
 
         requireString(criterion.id, `eval_strategy.criteria[${index}].id`, errors);
         requireString(criterion.desc, `eval_strategy.criteria[${index}].desc`, errors);
-        requireString(criterion.method, `eval_strategy.criteria[${index}].method`, errors);
-        requireString(criterion.threshold, `eval_strategy.criteria[${index}].threshold`, errors);
+        if (criterion.method !== undefined) {
+          requireString(criterion.method, `eval_strategy.criteria[${index}].method`, errors);
+        }
+        if (criterion.threshold !== undefined) {
+          requireString(criterion.threshold, `eval_strategy.criteria[${index}].threshold`, errors);
+        }
+        if (criterion.weight !== undefined && typeof criterion.weight !== "number") {
+          errors.push(`Missing or invalid field: eval_strategy.criteria[${index}].weight`);
+        }
       });
     }
   }
 
   return errors;
+}
+
+function normalizeContract(record: Record<string, unknown>): Contract {
+  const agent = normalizeAgent(record.agent);
+  const generator = firstNonEmptyString(record.generator, agent?.generator) ?? "";
+  const evaluator = firstNonEmptyString(record.evaluator, agent?.evaluator) ?? "";
+  const scope = isPlainObject(record.scope) ? record.scope : {};
+  const evalStrategy = isPlainObject(record.eval_strategy) ? record.eval_strategy : {};
+
+  return {
+    id: String(record.id).trim(),
+    name: String(record.name).trim(),
+    type: isContractType(record.type) ? record.type : "coding",
+    created_at: optionalString(record.created_at),
+    batch: optionalString(record.batch),
+    description: optionalString(record.description),
+    scope: {
+      files: normalizeStringArray(scope.files),
+      boundaries: normalizeStringArray(scope.boundaries),
+      conflicts_with: normalizeStringArray(scope.conflicts_with)
+    },
+    deliverables: normalizeDeliverables(record.deliverables),
+    eval_strategy: {
+      type: isEvalStrategyType(evalStrategy.type) ? evalStrategy.type : "review",
+      criteria: normalizeCriteria(evalStrategy.criteria)
+    },
+    generator,
+    evaluator,
+    ...(agent ? { agent } : {}),
+    max_iterations: Number(record.max_iterations),
+    depends_on: normalizeStringArray(record.depends_on)
+  };
+}
+
+function normalizeAgent(value: unknown): Contract["agent"] | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  const generator = optionalString(value.generator);
+  const evaluator = optionalString(value.evaluator);
+
+  if (!generator && !evaluator) {
+    return undefined;
+  }
+
+  return {
+    ...(generator ? { generator } : {}),
+    ...(evaluator ? { evaluator } : {})
+  };
+}
+
+function normalizeDeliverables(value: unknown): ContractDeliverable[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((deliverable) => {
+    if (typeof deliverable === "string") {
+      return { description: deliverable.trim() };
+    }
+
+    const record = isPlainObject(deliverable) ? deliverable : {};
+    const path = optionalString(record.path);
+    const description = optionalString(record.description) ?? path ?? "";
+
+    return {
+      ...(path ? { path } : {}),
+      description
+    };
+  });
+}
+
+function normalizeCriteria(value: unknown): ContractCriterion[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((criterion) => {
+    const record = isPlainObject(criterion) ? criterion : {};
+
+    return {
+      id: String(record.id ?? "").trim(),
+      desc: String(record.desc ?? "").trim(),
+      ...(optionalString(record.method) ? { method: optionalString(record.method) } : {}),
+      ...(optionalString(record.threshold)
+        ? { threshold: optionalString(record.threshold) }
+        : {}),
+      ...(typeof record.weight === "number" ? { weight: record.weight } : {})
+    };
+  });
 }
 
 function parseQuotedScalar(raw: string | undefined): string {
@@ -174,4 +345,44 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type { Contract, ContractCriterion, ContractEvalStrategy, ContractScope };
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const normalized = optionalString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+function isContractType(value: unknown): value is ContractType {
+  return typeof value === "string" && CONTRACT_TYPES.has(value as ContractType);
+}
+
+function isEvalStrategyType(value: unknown): value is EvalStrategyType {
+  return typeof value === "string" && EVAL_STRATEGY_TYPES.has(value as EvalStrategyType);
+}
+
+export type {
+  Contract,
+  ContractCriterion,
+  ContractDeliverable,
+  ContractEvalStrategy,
+  ContractScope
+};

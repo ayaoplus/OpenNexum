@@ -16,7 +16,10 @@ const baseContract = {
   scope: {
     files: ['src/foo.ts', 'src/bar.ts'],
   },
-  deliverables: ['Deliver X', 'Deliver Y'],
+  deliverables: [
+    { path: 'src/foo.ts', description: 'Deliver X' },
+    { path: 'src/bar.ts', description: 'Deliver Y' },
+  ],
   eval_strategy: {
     criteria: [
       { id: 'C1', desc: 'Output is correct', method: 'unit', threshold: 'pass' },
@@ -54,11 +57,31 @@ describe('renderGeneratorPrompt', () => {
     const result = renderGeneratorPrompt(baseContext);
     expect(result).toContain('Deliver X');
     expect(result).toContain('Deliver Y');
+    expect(result).toContain('src/foo.ts: Deliver X');
   });
 
   it('contains criteria in output', () => {
     const result = renderGeneratorPrompt(baseContext);
     expect(result).toContain('Output is correct');
+  });
+
+  it('renders modern criteria/deliverables without undefined placeholders', () => {
+    const modernContext: PromptContext = {
+      ...baseContext,
+      contract: {
+        ...baseContract,
+        deliverables: [{ path: 'src/foo.ts', description: 'Deliver X' }],
+        eval_strategy: {
+          criteria: [{ id: 'C1', desc: 'Output is correct', weight: 3 }],
+        },
+      },
+    };
+
+    const result = renderGeneratorPrompt(modernContext);
+    expect(result).toContain('src/foo.ts: Deliver X');
+    expect(result).toContain('weight: 3');
+    expect(result).not.toContain('[object Object]');
+    expect(result).not.toContain('undefined');
   });
 
   it('contains git commit command in output', () => {

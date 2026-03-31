@@ -8,7 +8,6 @@ import {
   readTasks,
   updateTask,
   TaskStatus,
-  getHeadCommit,
   loadConfig,
   resolveAgentCli,
 } from '@nexum/core';
@@ -229,12 +228,14 @@ export async function runComplete(
     const promptFile = path.join(promptsDir, `${taskId}-retry-${Date.now()}.md`);
     await writeFile(promptFile, promptContent, 'utf8');
 
-    const baseCommit = await getHeadCommit(projectDir).catch(() => '');
     await updateTask(projectDir, taskId, {
-      status: TaskStatus.Running,
+      status: TaskStatus.Pending,
       iteration: nextIteration,
       eval_result_path: nextEvalResultPath,
-      ...(baseCommit ? { base_commit: baseCommit } : {}),
+      base_commit: undefined,
+      started_at: undefined,
+      acp_session_key: undefined,
+      acp_stream_log: undefined,
     });
 
     const config = await loadConfig(projectDir);

@@ -49,9 +49,9 @@ pending → running → generator_done → evaluating → done
 |------|------|---------|
 | `pending` | 等待执行，依赖已满足 | 任务注册 或 依赖解锁 |
 | `blocked` | 等待依赖完成 | 任务注册时有 depends_on |
-| `running` | Generator 正在执行 | `nexum spawn` |
+| `running` | Generator 正在执行 | `nexum track --role generator` |
 | `generator_done` | 代码编写完成，等待审查 | `nexum callback --role generator` |
-| `evaluating` | Evaluator 正在审查 | `nexum eval` |
+| `evaluating` | Evaluator 正在审查 | `nexum track --role evaluator` |
 | `done` | 审查通过，任务完成 | `nexum complete pass` |
 | `failed` | 任务失败 | 异常 |
 | `escalated` | 超过重试上限，需人工介入 | `nexum complete` 检测到 |
@@ -63,9 +63,9 @@ pending → running → generator_done → evaluating → done
 
 ```
 1. 编排者写 Contract YAML → 注册到 active-tasks.json
-2. nexum spawn <taskId> → 生成 prompt 文件 → 状态: running
+2. nexum spawn <taskId> → 生成 prompt 文件（不提前标记 running）
 3. 编排者调用 sessions_spawn(promptFile) → ACP session 启动
-4. nexum track <taskId> <sessionKey> → 记录 session + 发派发通知
+4. nexum track <taskId> <sessionKey> --role generator → 状态: running，记录 session + 发派发通知
 
 5. Generator 完成 → git commit + push → nexum callback --role generator
    ↓ callback 自动执行:
@@ -73,7 +73,7 @@ pending → running → generator_done → evaluating → done
    b. 发通知 [1/2] 代码编写完成
    c. 写 nexum/dispatch-queue.jsonl（兜底）
    d. POST /hooks/agent → 实时唤醒编排者
-   e. 编排者收到 webhook → nexum eval → sessions_spawn evaluator
+   e. 编排者收到 webhook → nexum eval → sessions_spawn evaluator → nexum track --role evaluator → 状态: evaluating
 
 6. Evaluator 完成 → 写 eval YAML → nexum callback --role evaluator
    ↓ callback 自动执行:
@@ -81,22 +81,22 @@ pending → running → generator_done → evaluating → done
    b. verdict=pass → complete → 状态: done → 发通知 [2/2] 审查通过
       → 如果当前 batch 全部完成 → 发批次总结通知 🎉
       → 解锁下游任务 → 写 dispatch-queue + POST /hooks/agent
-      → 编排者 spawn 下一个 pending generator
+      → 编排者 spawn 下一个 pending generator → nexum track --role generator
    c. verdict=fail → retry → 发通知 审查失败
       → 写 dispatch-queue + POST /hooks/agent
-      → 编排者 spawn retry generator
+      → 编排者 spawn retry generator → nexum track --role generator
    d. iteration >= max 或 feedback 相似度 > 80% → escalated → 发通知 → 停止
 
 7. 兜底机制（dispatch-queue）:
-   - callback 每次 dispatch 前写 nexum/dispatch-queue.jsonl
-   - 心跳（默认 10 分钟）扫描 queue，未处理的自动执行
-   - 保证即使 webhook 失败或编排者不在线，最迟 10 分钟内处理
+   - callback 每次 dispatch 前写 nexum/dispatch-queue.jsonl（带文件锁，原子写）
+   - watch 心跳扫描 queue，未处理的 entry 会重放 webhook，重新唤醒编排者
+   - queue entry 在 `track` 或后续状态推进后 ack，避免重复派发
 
-8. Watch 守护进程（卡死检测）:
+8. Watch 守护进程（dispatch heartbeat + 卡死检测）:
    - 每 5 分钟检查所有项目
-   - 发现 30 分钟无更新的 running/evaluating 任务 → 发 Telegram 告警
+   - 先扫描 dispatch-queue，重放未处理 webhook
+   - 再检查 30 分钟无更新的 running/evaluating 任务 → 发 Telegram 告警
    - 同时 POST /hooks/agent 唤醒编排者自动处理
-   - 不做 dispatch（dispatch 由 callback 事件驱动）
 ```
 
 ---

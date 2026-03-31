@@ -5,9 +5,6 @@ import {
   parseContract,
   getTask,
   updateTask,
-
-  TaskStatus,
-  getHeadCommit,
   loadConfig,
   resolveAgentCli,
 } from '@nexum/core';
@@ -125,15 +122,6 @@ export async function runSpawn(taskId: string, projectDir: string): Promise<Spaw
   const promptFile = path.join(promptsDir, `${taskId}-gen-${Date.now()}.md`);
   await writeFile(promptFile, promptContent, 'utf8');
 
-  const baseCommit = await getHeadCommit(projectDir).catch(() => '');
-
-  await updateTask(projectDir, taskId, {
-    status: TaskStatus.Running,
-    started_at: new Date().toISOString(),
-    ...(baseCommit ? { base_commit: baseCommit } : {}),
-    iteration,
-  });
-
   const agentCli = resolveAgentCli(config, resolvedContract.generator);
   const label = `nexum-${taskId.toLowerCase()}-${resolvedContract.generator}`;
 
@@ -192,7 +180,6 @@ export async function runSpawnEval(taskId: string, projectDir: string): Promise<
   await writeFile(promptFile, promptContent, 'utf8');
 
   await updateTask(projectDir, taskId, {
-    status: TaskStatus.Evaluating,
     eval_result_path: evalResultPath,
   });
 

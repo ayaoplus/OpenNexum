@@ -1,6 +1,6 @@
 export type ContractType = "coding" | "task" | "creative";
 
-export type EvalStrategyType = "unit" | "integration" | "review";
+export type EvalStrategyType = "unit" | "integration" | "review" | "e2e" | "composite";
 
 export interface ContractScope {
   files: string[];
@@ -11,8 +11,14 @@ export interface ContractScope {
 export interface ContractCriterion {
   id: string;
   desc: string;
-  method: string;
-  threshold: string;
+  method?: string;
+  threshold?: string;
+  weight?: number;
+}
+
+export interface ContractDeliverable {
+  path?: string;
+  description: string;
 }
 
 export interface ContractEvalStrategy {
@@ -29,9 +35,11 @@ export interface Contract {
   id: string;
   name: string;
   type: ContractType;
-  created_at: string;
+  created_at?: string;
+  batch?: string;
+  description?: string;
   scope: ContractScope;
-  deliverables: string[];
+  deliverables: ContractDeliverable[];
   eval_strategy: ContractEvalStrategy;
   generator: string;
   evaluator: string;
