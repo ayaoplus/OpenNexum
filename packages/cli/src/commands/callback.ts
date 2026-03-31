@@ -97,7 +97,12 @@ async function getLastCommitMessage(projectDir: string): Promise<string> {
   }
 }
 
-async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir: string): Promise<boolean> {
+async function dispatchViaWebhook(
+  taskId: string,
+  role: DispatchRole,
+  projectDir: string,
+  sessionName: string
+): Promise<boolean> {
   try {
     const config = await loadConfig(projectDir).catch(() => ({ webhook: undefined } as NexumConfig));
     const token = await resolveWebhookToken(config);
@@ -108,7 +113,6 @@ async function dispatchViaWebhook(taskId: string, role: DispatchRole, projectDir
     }
 
     const endpoint = resolveWebhookAgentEndpoint(config);
-    const sessionName = await getNextSessionName(role === 'generator' ? 'gen' : 'eval', projectDir);
     const payload = {
       message: `nexum-dispatch: ${taskId} ${role} ${projectDir}`,
       name: 'Nexum',
@@ -363,8 +367,9 @@ async function runGeneratorCallback(taskId: string, options: CallbackOptions): P
   // ── Step 3: Auto-dispatch evaluator ──
   await writeDispatchQueue(taskId, 'spawn-evaluator', projectDir);
   try {
+    const sessionName = await getNextSessionName('eval', projectDir);
     await runSpawnEval(taskId, projectDir);
-    const dispatched = await dispatchViaWebhook(taskId, 'evaluator', projectDir);
+    const dispatched = await dispatchViaWebhook(taskId, 'evaluator', projectDir, sessionName);
     if (dispatched) {
       console.log(`[callback] auto-dispatched evaluator for ${taskId} via webhook`);
     }
@@ -458,7 +463,8 @@ async function runEvaluatorCallback(taskId: string, options: CallbackOptions): P
   if (result.action === 'retry' && result.retryPayload) {
     await writeDispatchQueue(taskId, 'spawn-retry', projectDir);
     try {
-      const dispatched = await dispatchViaWebhook(taskId, 'generator', projectDir);
+      const sessionName = await getNextSessionName('gen', projectDir);
+      const dispatched = await dispatchViaWebhook(taskId, 'generator', projectDir, sessionName);
       if (dispatched) {
         console.log(`[callback] auto-dispatched retry generator for ${taskId} via webhook`);
       }
@@ -486,8 +492,9 @@ async function autoDispatchUnlockedTasks(projectDir: string, unlockedIds: string
 
     await writeDispatchQueue(id, 'spawn-next', projectDir);
     try {
+      const sessionName = await getNextSessionName('gen', projectDir);
       await runSpawn(id, projectDir);
-      const dispatched = await dispatchViaWebhook(id, 'generator', projectDir);
+      const dispatched = await dispatchViaWebhook(id, 'generator', projectDir, sessionName);
       if (dispatched) {
         console.log(`[callback] auto-dispatched next generator for ${id} via webhook`);
       }

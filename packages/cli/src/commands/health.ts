@@ -5,6 +5,11 @@ import { readTasks, TaskStatus, loadConfig } from '@nexum/core';
 import { getSessionStatus } from '@nexum/spawn';
 import { sendMessage, formatHealthAlert } from '@nexum/notify';
 import {
+  resolveWebhookAgentEndpoint,
+  resolveWebhookToken,
+  summarizeResponse,
+} from './callback.js';
+import {
   readGlobalConfig,
   addProject,
   removeProject,
@@ -119,12 +124,44 @@ function printHealthReport(result: HealthResult, timeoutMin: number): void {
 }
 
 async function sendAlert(projectDir: string, stuck: StuckTask[]): Promise<void> {
-  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined }));
+  const config = await loadConfig(projectDir).catch(() => ({ notify: undefined, webhook: undefined }));
   const target = config.notify?.target;
-  if (!target) return;
+  if (target) {
+    const msg = formatHealthAlert(stuck);
+    await sendMessage(target, msg);
+  }
 
-  const msg = formatHealthAlert(stuck);
-  await sendMessage(target, msg);
+  const token = await resolveWebhookToken(config);
+  if (!token) return;
+
+  const endpoint = resolveWebhookAgentEndpoint(config);
+  const taskIds = stuck.map((task) => task.id).join(', ');
+  const payload = {
+    message: `nexum-health-alert: ${projectDir} stuck tasks: ${taskIds}`,
+    name: 'Nexum',
+    agentId: 'main',
+    deliver: false,
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const details = summarizeResponse(await response.text().catch(() => ''));
+      console.warn(
+        `[health] webhook alert failed for ${projectDir}: ${response.status} ${response.statusText}${details ? ` - ${details}` : ''}`
+      );
+    }
+  } catch (err) {
+    console.warn(`[health] webhook alert failed for ${projectDir}: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 // ─── Watch (daemon mode, health-only, no dispatch) ───────────────────────────

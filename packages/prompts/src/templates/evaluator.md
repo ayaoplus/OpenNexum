@@ -10,6 +10,8 @@
 
 ## Instructions
 
+Output only the YAML result file and the callback command. Do not narrate your reasoning process.
+
 1. 逐条检查每个 criterion。
 2. 对每个 criterion 给出 pass 或 fail 判定，并附简短理由。
 3. 如果任何 criterion 失败，整体评估为 fail。

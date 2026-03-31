@@ -52,7 +52,7 @@ export async function runTrack(
       const msg = formatDispatch({
         taskId,
         taskName: contract.name,
-        agent: generatorId,
+        agent: `${generatorId} (${taskId})`,
         model: agentConfig?.model,
         scopeCount: contract.scope.files.length,
         deliverablesCount: contract.deliverables.length,
