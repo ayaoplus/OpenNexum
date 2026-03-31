@@ -1,0 +1,43 @@
+id: NEXUM-018
+name: "P0: fix TASK_NAME_EN placeholder and English commit message"
+batch: batch-5
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/spawn.ts
+    - packages/prompts/src/renderer.ts
+    - packages/prompts/src/types.ts
+
+description: "Two fixes: 1) spawn.ts generates commit message from contract.name which is often Chinese - extract an English-safe task name from taskId (e.g. NEXUM-018 -> nexum-018-fix-task-name-en) as fallback when name contains non-ASCII. 2) renderer.ts renderGeneratorPrompt must pass TASK_NAME_EN variable so templates using {{TASK_NAME_EN}} resolve correctly instead of showing the raw placeholder."
+
+deliverables:
+  - path: packages/cli/src/commands/spawn.ts
+    description: "In the commit message generation, add a function toEnglishCommitSummary(name, taskId) that returns name if it is ASCII-only, otherwise returns a kebab-case slug derived from taskId (e.g. 'NEXUM-018' -> 'nexum-018'). Use this in commitMsg construction so git commit messages are always English."
+
+  - path: packages/prompts/src/renderer.ts
+    description: "In renderGeneratorPrompt, pass TASK_NAME_EN to applyVariables. Value: context.task.name if ASCII-only, otherwise kebab slug from context.task.id (e.g. 'NEXUM-018' -> 'nexum-018')."
+
+  - path: packages/prompts/src/types.ts
+    description: "No changes needed unless PromptContext is missing a field required by the above. Only modify if TypeScript compilation requires it."
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "spawn.ts commit message uses ASCII-only summary - Chinese task names fall back to taskId-derived slug"
+      weight: 3
+    - id: C2
+      desc: "renderer.ts passes TASK_NAME_EN to applyVariables in renderGeneratorPrompt"
+      weight: 3
+    - id: C3
+      desc: "pnpm build passes with no TypeScript errors"
+      weight: 2
+    - id: C4
+      desc: "Only scope.files are modified"
+      weight: 2
+
+max_iterations: 3

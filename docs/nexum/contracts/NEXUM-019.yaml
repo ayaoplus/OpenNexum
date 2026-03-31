@@ -1,0 +1,35 @@
+id: NEXUM-019
+name: "P0: dispatch-queue idempotent write - prevent duplicate evaluator spawns"
+batch: batch-5
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/callback.ts
+
+description: "writeDispatchQueue currently uses appendFile unconditionally - if callback is called twice for the same task (retry, network issue, manual re-run), duplicate entries pile up and the heartbeat will spawn multiple evaluators for the same task. Fix: before appending, read the file and skip if an entry with the same taskId+action already exists."
+
+deliverables:
+  - path: packages/cli/src/commands/callback.ts
+    description: "Modify writeDispatchQueue to: 1) read existing dispatch-queue.jsonl (empty array if not exists), 2) check if any line already has matching taskId AND action, 3) skip append if duplicate found and log a warn, 4) append only if no duplicate. Use readFile+writeFile pattern (not appendFile) to allow full rewrite when needed. Keep the function signature unchanged."
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "writeDispatchQueue reads existing entries before appending and skips if taskId+action duplicate exists"
+      weight: 4
+    - id: C2
+      desc: "Duplicate detection uses both taskId AND action (not just taskId)"
+      weight: 2
+    - id: C3
+      desc: "pnpm build passes with no TypeScript errors"
+      weight: 2
+    - id: C4
+      desc: "Only packages/cli/src/commands/callback.ts is modified"
+      weight: 2
+
+max_iterations: 2

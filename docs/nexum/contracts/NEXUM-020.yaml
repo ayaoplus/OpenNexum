@@ -1,0 +1,39 @@
+id: NEXUM-020
+name: "P1: fix auto-route to read contract.agent.generator instead of contract.generator"
+batch: batch-5
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/lib/auto-route.ts
+    - packages/cli/src/commands/spawn.ts
+
+description: "resolveAgents in auto-route.ts reads contract.generator and contract.evaluator (top-level fields), but our Contracts use agent.generator / agent.evaluator nested under the agent key. When a Contract has generator: auto under agent block, auto-routing never triggers because contract.generator is undefined. Fix resolveAgents to check contract.agent?.generator first."
+
+deliverables:
+  - path: packages/cli/src/lib/auto-route.ts
+    description: "Update resolveAgents to accept a contract shape that includes optional agent: { generator?: string; evaluator?: string }. Use (contract.agent?.generator ?? contract.generator) as the raw generator input to isAutoAgent, same for evaluator."
+
+  - path: packages/cli/src/commands/spawn.ts
+    description: "In runSpawn, when calling resolveAgents, pass the full contract object including the agent field so auto-route can see it. Verify the resolved generator/evaluator are used consistently in the spawn payload."
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "auto-route.ts resolveAgents reads contract.agent?.generator ?? contract.generator for generator resolution"
+      weight: 4
+    - id: C2
+      desc: "auto-route.ts resolveAgents reads contract.agent?.evaluator ?? contract.evaluator for evaluator resolution"
+      weight: 3
+    - id: C3
+      desc: "pnpm build passes with no TypeScript errors"
+      weight: 2
+    - id: C4
+      desc: "Only scope.files are modified"
+      weight: 1
+
+max_iterations: 2

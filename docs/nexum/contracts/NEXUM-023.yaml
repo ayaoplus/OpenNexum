@@ -1,0 +1,54 @@
+id: NEXUM-023
+name: "notification improvements: agent naming, health auto-wake, evaluator output noise"
+batch: batch-6
+
+agent:
+  generator: codex-gen-01
+  evaluator: claude-eval-01
+
+scope:
+  files:
+    - packages/cli/src/commands/callback.ts
+    - packages/cli/src/commands/health.ts
+    - packages/cli/src/commands/track.ts
+    - packages/notify/src/templates.ts
+    - packages/prompts/src/templates/evaluator.md
+
+description: "Three notification improvements: 1) Agent session naming - instead of reusing the same agent type name (codex-gen-01) for all parallel tasks, assign sequential numbered session names: codex-gen-01, codex-gen-02, codex-gen-03 etc. based on global counter stored in nexum/session-counter.json. Display these in dispatch notifications so parallel tasks are distinguishable. 2) health.ts sendAlert should also POST to /hooks/agent to wake the orchestrator automatically, not just notify the user. 3) evaluator.md prompt should include a concise output directive to avoid streaming verbose reasoning to the channel."
+
+deliverables:
+  - path: packages/cli/src/commands/callback.ts
+    description: "1) In autoDispatchUnlockedTasks and the evaluator auto-dispatch: replace hardcoded session names (codex-gen-TASK-ID, claude-eval-TASK-ID) with sequential numbered names from a shared counter. Add getNextSessionName(role: 'gen'|'eval', projectDir) that reads/writes nexum/session-counter.json atomically to get next number. Format: codex-gen-01, codex-gen-02 for generators; claude-eval-01, claude-eval-02 for evaluators. Pass the resolved session name to dispatchViaWebhook message payload so orchestrator knows which session to track. 2) The webhook message body should include sessionName: 'codex-gen-02' so I can use it in track."
+
+  - path: packages/cli/src/commands/health.ts
+    description: "In sendAlert function, after sending Telegram notification, also POST to OpenClaw /hooks/agent using the same token resolution logic as dispatchViaWebhook in callback.ts. Message: 'nexum-health-alert: <projectDir> stuck tasks: <taskIds>'. This wakes the orchestrator to automatically handle stuck tasks. Add resolveWebhookToken helper (or import from a shared location if refactored)."
+
+  - path: packages/cli/src/commands/track.ts
+    description: "In formatDispatch call, append task ID to agent name for disambiguation: agent field should be 'codex-gen-01 (NEXUM-023)' format so parallel dispatch notifications are distinguishable."
+
+  - path: packages/notify/src/templates.ts
+    description: "No functional change needed - agent field in DispatchOptions already renders as-is. Verify SEP length is still 15 chars (from NEXUM-017). No other changes."
+
+  - path: packages/prompts/src/templates/evaluator.md
+    description: "Add a concise output directive near the top of Instructions section: 'Output only the YAML result file and the callback command. Do not narrate your reasoning process.' This reduces stream noise delivered to the messaging channel."
+
+eval_strategy:
+  type: review
+  criteria:
+    - id: C1
+      desc: "callback.ts uses sequential numbered session names (codex-gen-01/02, claude-eval-01/02) via nexum/session-counter.json"
+      weight: 3
+    - id: C2
+      desc: "health.ts sendAlert also posts to /hooks/agent after sending Telegram notification"
+      weight: 3
+    - id: C3
+      desc: "track.ts formatDispatch agent field includes task ID in parentheses e.g. 'codex-gen-01 (NEXUM-023)'"
+      weight: 2
+    - id: C4
+      desc: "evaluator.md has concise output directive to avoid verbose reasoning stream"
+      weight: 1
+    - id: C5
+      desc: "pnpm build passes with no TypeScript errors"
+      weight: 1
+
+max_iterations: 3
