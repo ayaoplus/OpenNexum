@@ -77,32 +77,34 @@ async function upsertCallbackProtocol(
 ): Promise<{ result: "created" | "updated" | "unchanged"; targetFile: string }> {
   const agentsPath = path.join(projectDir, "AGENTS.md");
   const claudePath = path.join(projectDir, "CLAUDE.md");
-  const targetPath = (await fileExists(agentsPath)) ? agentsPath : claudePath;
+  const hasAgents = await fileExists(agentsPath);
+  const hasClaude = await fileExists(claudePath);
 
   const blockPattern = new RegExp(
     `${CALLBACK_BLOCK_START}[\\s\\S]*?${CALLBACK_BLOCK_END}\\n?`,
     "g"
   );
 
-  if (!(await fileExists(targetPath))) {
+  if (!hasAgents && !hasClaude) {
     await writeFile(
-      targetPath,
+      agentsPath,
       `${DEFAULT_AGENT_GUIDE}\n${CALLBACK_PROTOCOL_BLOCK}\n`,
       "utf8"
     );
-    return { result: "created", targetFile: targetPath };
+    return { result: "created", targetFile: agentsPath };
   }
 
-  const current = await readFile(targetPath, "utf8");
+  const sourcePath = hasAgents ? agentsPath : claudePath;
+  const current = await readFile(sourcePath, "utf8");
   const withoutExistingBlock = current.replace(blockPattern, "").trimEnd();
   const next = `${withoutExistingBlock ? `${withoutExistingBlock}\n\n` : ""}${CALLBACK_PROTOCOL_BLOCK}\n`;
 
-  if (next === current) {
-    return { result: "unchanged", targetFile: targetPath };
+  if (hasAgents && next === current) {
+    return { result: "unchanged", targetFile: agentsPath };
   }
 
-  await writeFile(targetPath, next, "utf8");
-  return { result: "updated", targetFile: targetPath };
+  await writeFile(agentsPath, next, "utf8");
+  return { result: hasAgents ? "updated" : "created", targetFile: agentsPath };
 }
 
 // ─── Interactive wizard ────────────────────────────────────────────────────────

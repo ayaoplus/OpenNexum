@@ -1,6 +1,6 @@
 ---
 name: opennexum
-version: 2.1.2
+version: 2.1.3
 description: Contract-driven multi-agent orchestration with ACP. Contract sync, webhook + dispatch-queue dual dispatch, cross-review, auto-retry, batch progress tracking.
 requires:
   node: ">=20"
@@ -79,6 +79,8 @@ max_iterations: 3
 ```
 
 ## Callback Protocol (injected into AGENTS.md via nexum init)
+
+`nexum init` writes the callback protocol into `AGENTS.md` as the source of truth. If a project only has `CLAUDE.md`, Nexum will seed `AGENTS.md` from it and update `AGENTS.md` going forward.
 
 After completing a task, run:
 ```bash
