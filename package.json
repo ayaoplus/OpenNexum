@@ -7,5 +7,5 @@
     "test": "pnpm dlx turbo run test --filter=@nexum/core --filter=@nexum/prompts --filter=@nexum/spawn --filter=@nexum/notify --filter=@nexum/cli",
     "release": "pnpm build && echo Release ready"
   },
-  "version": "2.1.3"
+  "version": "2.1.4"
 }

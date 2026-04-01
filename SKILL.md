@@ -1,6 +1,6 @@
 ---
 name: opennexum
-version: 2.1.3
+version: 2.1.4
 description: Contract-driven multi-agent orchestration with ACP. Contract sync, webhook + dispatch-queue dual dispatch, cross-review, auto-retry, batch progress tracking.
 requires:
   node: ">=20"
